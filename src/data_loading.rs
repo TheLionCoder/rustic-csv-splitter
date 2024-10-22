@@ -1,31 +1,37 @@
-use polars::prelude::*;
-
+use std::fs::File;
 use std::path::Path;
-use polars::prelude::CsvEncoding;
-use polars::prelude::LazyCsvReader;
+use csv::{Reader, ReaderBuilder, StringRecord};
 
-pub(crate) fn load_data(path: &Path, encoding: CsvEncoding) -> PolarsResult<LazyFrame> {
-    let q: LazyFrame = LazyCsvReader::new(path)
-        .with_infer_schema_length(Some(0))
-        .with_encoding(encoding)
-        .finish()?;
-    Ok(q)
+pub(crate) fn read_file(path: &str, delimiter: u8) -> Result<Reader<File>, csv::Error> {
+    let reader: Reader<File> = ReaderBuilder::new()
+        .has_headers(true)
+        .delimiter(delimiter)
+        .from_path(path)?;
+    Ok(reader)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
+fn extract_file_name(path: &str) -> Result<&str, Box<dyn std::error::Error>> {
+    let path: &Path = Path::new(path);
+    let file_stem: &str = path.file_stem().unwrap().to_str().unwrap();
+    Ok(file_stem)
+}
+
+
+mod tests{
     use super::*;
 
     #[test]
-    fn test_load_data() {
-        let path: PathBuf = PathBuf::from("./assets/city.csv");
-        let encoding: CsvEncoding = CsvEncoding::Utf8;
+    fn test_read_file_comma_delimiter() {
+        let path: &str = "././assets/city.csv";
+        let mut reader: Reader<File> = read_file(path, b',').unwrap();
+        let headers: &StringRecord = reader.headers().unwrap();
+        assert_eq!(headers, vec!["City", "State", "Population", "Latitude", "Longitude"])
+    }
 
-        let result: PolarsResult<LazyFrame> = load_data(&path, encoding);
-        assert!(result.is_ok(), "Failed to load data");
-
-        let q: LazyFrame = result.unwrap();
-        assert!(!q.collect().unwrap().is_empty(), "Dataframe is empty");
+    #[test]
+    fn test_get_file_name() {
+        let path: &str = "././assets/city.csv";
+        let file_stem: &str = extract_file_name(path).unwrap();
+        assert_eq!(file_stem, "city")
     }
 }

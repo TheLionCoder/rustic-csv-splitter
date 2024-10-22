@@ -1,47 +1,42 @@
-use polars::prelude::*;
+use std::collections::{HashMap};
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use csv::{Reader, StringRecord};
 
+//TODO: implement mkdir
+pub(crate) fn split_csv_by_category(reader: &mut Reader<File>, headers: &StringRecord,
+                                    split_column: &str, output_dir: &str) -> Result<(), csv::Error> {
+    let mut file_buffer: HashMap<String, BufWriter<File>> = HashMap::new();
+    let headers_vec: Vec<&str> = headers.iter().collect();
+    let split_column_idx: usize = headers.iter().position(|h| h == split_column).unwrap();
 
-fn has_null(input_column: &Series) -> bool {
-    input_column.null_count() > 0
+    for result in reader.records() {
+        let record: StringRecord = result?;
+        let category = match record.get(split_column_idx) {
+            Some(value) if !value.is_empty() => value,
+            _  => "unknown"
+        };
+
+        let buffer = file_buffer.entry(category.to_string()).or_insert_with(|| {
+            let file_path: String = format!("{}/{}.csv", output_dir, category);
+            let file: File = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file_path).unwrap();
+            let mut writer: BufWriter<File> = BufWriter::new(file);
+            writeln!(writer, "{}", headers_vec.join(",")).unwrap();
+            writer
+        });
+        writeln!(buffer, "{}", record.iter()
+            .map(|field| field.to_string())
+            .collect::<Vec<_>>()
+            .join(","))?;
+    }
+    Ok(())
 }
 
 
-
-fn extract_unique_categories(query: LazyFrame, input_column: &str) -> Vec<String> {
-    let q: DataFrame = query
-        .clone()
-        .select([col(input_column)])
-        .unique(None, Default::default())
-        .collect().unwrap();
-
-    let series: &Series = q.column(input_column).unwrap();
-    todo!()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_dataframe() -> PolarsResult<DataFrame> {
-        let df: PolarsResult<DataFrame> = df!(
-            "state" => &["CA", "NY", "TX", "TX", "CA"],
-            "city" => &["San Francisco", "New York", "Austin", "Dallas", "Los Angeles"],
-            "population" => &[Some(1000_0000), Some(800_000), Some(1_0000), None, None]
-        );
-        df
-    }
-
-    #[test]
-    fn test_has_null() {
-        let series: Series = Series::new("state".into(),
-                                         &[Some("CA"), Some("NY"), None, Some("TX")]);
-        assert!(has_null(&series), "Failed to detect null values");
-    }
-
-    #[test]
-    fn test_extract_unique_categories() {
-        let df:  LazyFrame = make_dataframe().unwrap().lazy();
-        let categories: Vec<String> = extract_unique_categories(df, "state");
-        assert_eq!(categories, vec!["CA", "TX", "NY"])
-    }
+fn collect_headers(reader: &mut Reader<File>) -> StringRecord{
+    let headers= reader.headers().unwrap().clone();
+    headers
 }
