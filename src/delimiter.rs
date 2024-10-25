@@ -23,11 +23,10 @@ impl fmt::Display for Delimiter {
             Delimiter::Comma => String::from(","),
             Delimiter::Pipe => String::from("|"),
             Delimiter::Tab => String::from("\t"),
-            Delimiter::SemiColon => String::from(";")
+            Delimiter::SemiColon => String::from(";"),
         };
         write!(f, "{}", s)
     }
-
 }
 
 #[derive(Debug, Error)]

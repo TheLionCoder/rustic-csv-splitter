@@ -15,7 +15,7 @@ struct RecordProcessingContext<'a> {
     output_dir: &'a Path,
     create_directory: bool,
     file_name: &'a str,
-    delimiter: Delimiter,
+    delimiter: u8
 }
 
 /// Split a CSV file by a category in a column
@@ -24,9 +24,9 @@ pub(crate) fn split_file_by_category(
     input_column: &str,
     output_dir: &Path,
     create_directory: bool,
-    delimiter: Delimiter,
+    delimiter: &Delimiter,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader: Reader<File> = read_file(path, &delimiter)?;
+    let mut reader: Reader<File> = read_file(path, delimiter)?;
 
     let file_name: &str = extract_file_name(path)?;
     let headers: StringRecord = reader.headers()?.clone();
@@ -37,7 +37,7 @@ pub(crate) fn split_file_by_category(
         output_dir,
         create_directory,
         file_name,
-        delimiter,
+        delimiter: Delimiter::PIPE
     };
 
     // Get the index of the column to split by
@@ -55,7 +55,7 @@ fn process_records_in_parallel(
     split_column_idx: usize,
     context: RecordProcessingContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    records.par_chunks(10_000).for_each(|chunk| {
+    records.par_chunks(5_000).for_each(|chunk| {
         // Each chunk is processed in parallel
         process_chunk(chunk, split_column_idx, &context).unwrap();
     });
@@ -69,7 +69,7 @@ fn process_chunk(
     split_column_idx: usize,
     context: &RecordProcessingContext,
 ) -> Result<(), std::io::Error> {
-    let mut writers: HashMap<String, BufWriter<File>> = HashMap::new();
+    let mut writers: HashMap<String, BufWriter<File>> = HashMap::with_capacity(chunk.len());
 
     for record in chunk {
         let category = record
@@ -92,7 +92,7 @@ fn get_writer<'a>(
 ) -> &'a mut BufWriter<File> {
     writers.entry(category.to_string()).or_insert_with(|| {
         let file_path: String = create_category_path(category, context);
-        let file_exits: bool = Path::new(&file_path).exists();
+        let file_exist: bool = Path::new(&file_path).exists();
         let file: File = OpenOptions::new()
             .create(true)
             .append(true)
@@ -101,7 +101,7 @@ fn get_writer<'a>(
         let mut writer: BufWriter<File> = BufWriter::new(file);
 
         // Write headers if the file does not exist
-        if  !file_exits {
+        if !file_exist {
             writeln!(
                 writer,
                 "{}",
@@ -110,7 +110,7 @@ fn get_writer<'a>(
                     .iter()
                     .map(|field| field.to_string())
                     .collect::<Vec<_>>()
-                    .join(&context.delimiter.to_string())
+                    .join(&(context.delimiter as char).to_string())
             )
             .unwrap();
         }
@@ -131,7 +131,7 @@ fn write_record<W: Write>(
             .iter()
             .map(|field| field.to_string())
             .collect::<Vec<_>>()
-            .join(&context.delimiter.to_string())
+            .join(&(context.delimiter as char).to_string())
     )?;
     Ok(())
 }
@@ -192,18 +192,18 @@ mod tests {
         context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
 
-        split_file_by_category(&input_file, &input_column, &output_dir, false, delimiter).unwrap();
+        split_file_by_category(&input_file, &input_column, &output_dir, false, &delimiter).unwrap();
         let ak_file_path = format!("{}/AK.csv", output_dir.display());
         let al_file_path = format!("{}/AL.csv", output_dir.display());
 
         let ak_data = fs::read_to_string(ak_file_path).unwrap();
         let al_data = fs::read_to_string(al_file_path).unwrap();
 
-        assert!(ak_data.contains("City,State,Population,Latitude,Longitude"));
-        assert!(ak_data.contains("Davidson Landing,AK,,65.241944,-165.2716667"));
-        assert!(ak_data.contains("Kenai,AK,7610,60.5544444,-151.2583333"));
+        assert!(ak_data.contains("City|State|Population|Latitude|Longitude"));
+        assert!(ak_data.contains("Davidson Landing|AK||65.241944|-165.2716667"));
+        assert!(ak_data.contains("Kenai|AK|7610|60.5544444|-151.2583333"));
 
-        assert!(al_data.contains("City,State,Population,Latitude,Longitude"));
-        assert!(al_data.contains("Oakman,AL,,33.7133333,-87.38861111"));
+        assert!(al_data.contains("City|State|Population|Latitude|Longitude"));
+        assert!(al_data.contains("Oakman|AL||33.7133333|-87.38861111"));
     }
 }
