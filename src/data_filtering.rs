@@ -1,14 +1,13 @@
+use csv::{Reader, StringRecord};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
-
-use csv::{Reader, StringRecord};
-use rayon::prelude::*;
 
 use crate::data_loading::{extract_file_name, read_file};
+use crate::delimiter::Delimiter;
 
 #[derive(Clone)]
 struct RecordProcessingContext<'a> {
@@ -16,118 +15,145 @@ struct RecordProcessingContext<'a> {
     output_dir: &'a Path,
     create_directory: bool,
     file_name: &'a str,
+    delimiter: Delimiter,
 }
 
-#[allow(dead_code)]
+/// Split a CSV file by a category in a column
 pub(crate) fn split_file_by_category(
     path: &Path,
     input_column: &str,
     output_dir: &Path,
     create_directory: bool,
-    delimiter: u8,
+    delimiter: Delimiter,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader: Reader<File> = read_file(path, delimiter)?;
+    let mut reader: Reader<File> = read_file(path, &delimiter)?;
 
     let file_name: &str = extract_file_name(path)?;
     let headers: StringRecord = reader.headers()?.clone();
     let headers_vec: Vec<&str> = headers.iter().collect();
-
-    // Get the index of the column to split by
-    let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
 
     let context: RecordProcessingContext = RecordProcessingContext {
         headers: &headers_vec,
         output_dir,
         create_directory,
         file_name,
+        delimiter,
     };
 
-    // Collect records by category in parallel
-    let category_records: Arc<Mutex<HashMap<String, Vec<StringRecord>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    reader.records().par_bridge().for_each(|result| {
-        // Extract the category from the record
-        let record: StringRecord = result.unwrap();
-        let category: String = record
+    // Get the index of the column to split by
+    let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
+
+    let records: Vec<StringRecord> = reader.records().collect::<Result<_, _>>()?;
+
+    // process chunks in parallel using Rayon
+    process_records_in_parallel(records, split_column_idx, context)
+}
+
+/// Process records in parallel
+fn process_records_in_parallel(
+    records: Vec<StringRecord>,
+    split_column_idx: usize,
+    context: RecordProcessingContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    records.par_chunks(10_000).for_each(|chunk| {
+        // Each chunk is processed in parallel
+        process_chunk(chunk, split_column_idx, &context).unwrap();
+    });
+
+    Ok(())
+}
+
+/// Process each chunk and write to the appropriate file
+fn process_chunk(
+    chunk: &[StringRecord],
+    split_column_idx: usize,
+    context: &RecordProcessingContext,
+) -> Result<(), std::io::Error> {
+    let mut writers: HashMap<String, BufWriter<File>> = HashMap::new();
+
+    for record in chunk {
+        let category = record
             .get(split_column_idx)
             .unwrap_or("unknown")
             .to_string();
 
-        // Store records in a category
-        let mut category_map: MutexGuard<HashMap<String, Vec<StringRecord>>> =
-            category_records.lock().unwrap();
-        category_map.entry(category).or_default().push(record);
-    });
+        let writer: &mut BufWriter<File> = get_writer(&mut writers, &category, context);
+        write_record(writer, record, context)?
+    }
 
-    // Write each category to file sequentially
-    let category_map: HashMap<String, Vec<StringRecord>> = Arc::try_unwrap(category_records)
-        .unwrap()
-        .into_inner()
-        .unwrap();
-    category_map
-        .into_par_iter()
-        .try_for_each(|(category, records)| {
-            write_category_files(&category, &records, delimiter, context.clone())
-        })?;
     Ok(())
 }
 
-fn write_category_files(
+/// Get or create a writer for a category
+fn get_writer<'a>(
+    writers: &'a mut HashMap<String, BufWriter<File>>,
     category: &str,
-    records: &[StringRecord],
-    delimiter: u8,
-    context: RecordProcessingContext,
+    context: &RecordProcessingContext,
+) -> &'a mut BufWriter<File> {
+    writers.entry(category.to_string()).or_insert_with(|| {
+        let file_path: String = create_category_path(category, context);
+        let file_exits: bool = Path::new(&file_path).exists();
+        let file: File = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)
+            .unwrap();
+        let mut writer: BufWriter<File> = BufWriter::new(file);
+
+        // Write headers if the file does not exist
+        if  !file_exits {
+            writeln!(
+                writer,
+                "{}",
+                &context
+                    .headers
+                    .iter()
+                    .map(|field| field.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&context.delimiter.to_string())
+            )
+            .unwrap();
+        }
+        writer
+    })
+}
+
+/// Write a single record in the file
+fn write_record<W: Write>(
+    writer: &mut W,
+    record: &StringRecord,
+    context: &RecordProcessingContext,
 ) -> Result<(), std::io::Error> {
+    writeln!(
+        writer,
+        "{}",
+        record
+            .iter()
+            .map(|field| field.to_string())
+            .collect::<Vec<_>>()
+            .join(&context.delimiter.to_string())
+    )?;
+    Ok(())
+}
+
+/// Create a path for a category
+fn create_category_path(category: &str, context: &RecordProcessingContext) -> String {
     let file_path: String = if context.create_directory {
         let category_dir: String = format!("{}/{}", context.output_dir.display(), category);
         // Create a directory for the category if it not exists
         if !Path::new(&category_dir).exists() {
-            fs::create_dir_all(&category_dir)?;
+            fs::create_dir_all(&category_dir).unwrap();
         }
         format!("{}/{}.csv", category_dir, context.file_name)
     } else {
         format!("{}/{}.csv", context.output_dir.display(), category)
     };
-
-    let file_exists: bool = Path::new(&file_path).exists();
-    let file: File = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file_path)?;
-    let mut writer: BufWriter<File> = BufWriter::new(file);
-
-    // Write headers if the file does not exist
-    if !file_exists {
-        write_headers(&mut writer, context.headers, delimiter)?;
-    }
-    // Write records to the file
-    for record in records {
-        writeln!(
-            writer,
-            "{}",
-            record
-                .iter()
-                .map(|field| field.to_string())
-                .collect::<Vec<_>>()
-                .join(&(delimiter as char).to_string())
-        )?;
-    }
-    Ok(())
-}
-
-fn write_headers<W: Write>(
-    writer: &mut W,
-    headers: &[&str],
-    delimiter: u8,
-) -> Result<(), std::io::Error> {
-    writeln!(writer, "{}", headers.join(&(delimiter as char).to_string()))?;
-    Ok(())
+    file_path
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use std::path::PathBuf;
 
     struct TestContext {
@@ -155,24 +181,12 @@ mod tests {
     }
 
     #[test]
-    fn test_write_headers() {
-        let headers = vec!["doc", "id", "cost"];
-        let delimiter = b'|';
-        let mut buffer = Cursor::new(Vec::new());
-
-        write_headers(&mut buffer, &headers, delimiter).unwrap();
-
-        let written_data = String::from_utf8(buffer.into_inner()).unwrap();
-        assert_eq!(written_data, "doc|id|cost\n");
-    }
-
-    #[test]
     fn test_split_file_by_category() {
         let mut context = TestContext::new();
 
         let input_file = PathBuf::from("./assets/city.csv");
         let output_dir = PathBuf::from("./assets/tmp");
-        let delimiter = b',';
+        let delimiter = Delimiter::Comma;
         let input_column = "State";
 
         context.add_file(output_dir.join("AK.csv"));

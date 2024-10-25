@@ -1,6 +1,7 @@
 # CSV Splitter
 
-This project is designed to split a large dataset into multiple smaller files based on a specified column value, for default the output CSV files use "|" delimiter.
+This project is designed to split a large dataset into multiple smaller files
+based on a specified column value, for default the output CSV files use "|" delimiter.
 
 ## Instalation
 
@@ -27,7 +28,7 @@ cargo run release -- --help
 - `-d, --delimiter <delimiter> Delimiter used in the CSV file [default: ,]`
 - `-c, --column <input-column> Column to split the CSV file by`
 - `-o, --dir <output-dir> Output directory to save the split files`
-- `-r, --create-dor Save the split files in a directory with the name of the column value`
+- `-r, --create-dir Save the split files in a directory with the name of the column value`
 
 ### Example
 

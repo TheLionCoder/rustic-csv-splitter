@@ -1,41 +1,12 @@
 use std::path::Path;
 use std::str::FromStr;
+
 use clap::ArgMatches;
 
 mod cli_parsing;
 mod data_filtering;
 mod data_loading;
-
-
-enum Delimiter {
-    Comma,
-    Pipe,
-    Tab,
-}
-
-impl FromStr for Delimiter {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "," => Ok(Delimiter::Comma),
-            "|" => Ok(Delimiter::Pipe),
-            "\t" => Ok(Delimiter::Tab),
-            _ => Err(())
-        }
-    }
-}
-
-impl From<Delimiter> for u8 {
-    fn from(val: Delimiter) -> Self {
-        match val {
-            Delimiter::Comma => b',',
-            Delimiter::Pipe => b'|',
-            Delimiter::Tab => b'\t'
-        }
-    }
-}
-
+mod delimiter;
 
 fn main() {
     let matches: ArgMatches = cli_parsing::parse_cli();
@@ -47,9 +18,14 @@ fn main() {
 
     let path: &Path = Path::new(path_str);
     let output_dir: &Path = Path::new(output_dir_str);
-    let delimiter: Delimiter = Delimiter::from_str(delimiter_str).unwrap();
-    let delimiter_byte: u8 = delimiter.into();
+    let delimiter: delimiter::Delimiter = delimiter::Delimiter::from_str(delimiter_str).unwrap();
 
-    data_filtering::split_file_by_category(path, input_column, output_dir, create_dir,
-    delimiter_byte).unwrap()
+    data_filtering::split_file_by_category(
+        path,
+        input_column,
+        output_dir,
+        create_dir,
+        delimiter,
+    )
+    .unwrap()
 }

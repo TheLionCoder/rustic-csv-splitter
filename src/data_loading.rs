@@ -1,13 +1,15 @@
+use crate::delimiter::Delimiter;
 use csv::{Reader, ReaderBuilder};
 use std::fs::File;
 use std::path::Path;
 
 #[allow(dead_code)]
-pub(crate) fn read_file(path: &Path, delimiter: u8) -> Result<Reader<File>, csv::Error> {
+pub(crate) fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<File>, csv::Error> {
     let reader: Reader<File> = ReaderBuilder::new()
         .has_headers(true)
-        .delimiter(delimiter)
+        .delimiter(delimiter.clone().into())
         .from_path(path)?;
+
     Ok(reader)
 }
 

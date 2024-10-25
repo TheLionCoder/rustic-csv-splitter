@@ -1,5 +1,7 @@
 use clap::{Arg, ArgMatches};
 
+use crate::delimiter::Delimiter;
+
 pub(crate) fn parse_cli() -> ArgMatches {
     clap::Command::new("Csv Splitter")
         .version("0.1.0")
@@ -17,6 +19,7 @@ pub(crate) fn parse_cli() -> ArgMatches {
                 .short('d')
                 .long("delimiter")
                 .default_value(",")
+                .value_parser(|v: &str| v.parse::<Delimiter>())
                 .help("Delimiter used in the CSV file"),
         )
         .arg(
@@ -51,16 +54,14 @@ mod tests {
     #[test]
     fn test_parse_cli_command() {
         let matches = Command::new("test")
-            .arg(Arg::new("path").short('p').long("path"))
-            .try_get_matches_from(vec!["test", "-p", "documents/file.csv"])
+            .arg(Arg::new("delimiter").short('d').long("delimiter")
+                .value_parser(|v: &str| v.parse::<Delimiter>()))
+            .try_get_matches_from(vec!["test", "-d", ";"])
             .unwrap();
 
         assert_eq!(
-            matches
-                .get_one::<String>("path")
-                .map(String::as_str)
-                .unwrap(),
-            "documents/file.csv"
+            *matches
+                .get_one::<Delimiter>("delimiter").unwrap(), Delimiter::SemiColon
         )
     }
 }
