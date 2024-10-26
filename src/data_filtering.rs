@@ -77,7 +77,7 @@ fn process_chunk(
             .unwrap_or("unknown")
             .to_string();
 
-        let writer: &mut BufWriter<File> = get_writer(&mut writers, &category, context);
+        let writer: &mut BufWriter<File> = get_writer(&mut writers, &category, context)?;
         write_record(writer, record, context)?
     }
 
@@ -96,15 +96,14 @@ fn get_writer<'a>(
     writers: &'a mut HashMap<String, BufWriter<File>>,
     category: &str,
     context: &RecordProcessingContext,
-) -> &'a mut BufWriter<File> {
-    writers.entry(category.to_string()).or_insert_with(|| {
+) -> Result<&'a mut BufWriter<File>, std::io::Error>{
+    if !writers.contains_key(category) {
         let file_path: String = create_category_path(category, context);
         let file_exists: bool = Path::new(&file_path).exists();
         let file: File = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&file_path)
-            .unwrap();
+            .open(&file_path)?;
         let mut writer: BufWriter<File> = BufWriter::new(file);
 
         // Write headers if the file does not exist
@@ -118,11 +117,11 @@ fn get_writer<'a>(
                     .map(|field| field.to_string())
                     .collect::<Vec<_>>()
                     .join(&(context.delimiter as char).to_string())
-            )
-            .unwrap();
+            )?;
         }
-        writer
-    })
+        writers.insert(category.to_string(), writer);
+    }
+        Ok(writers.get_mut(category).unwrap())
 }
 
 /// Write a single record in the file
@@ -160,7 +159,7 @@ fn create_category_path(category: &str, context: &RecordProcessingContext) -> St
     };
 
     let file_path: &Path= Path::new(&file_path);
-    if !file_path.starts_with(&context.output_dir) {
+    if !file_path.starts_with(context.output_dir) {
         panic!("Path traversal detected: {}", file_path.display());
     }
     file_path.to_string_lossy().into_owned()
