@@ -55,7 +55,7 @@ fn process_records_in_parallel(
     split_column_idx: usize,
     context: RecordProcessingContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    records.par_chunks(5_000).for_each(|chunk| {
+    records.par_chunks(10_000).for_each(|chunk| {
         // Each chunk is processed in parallel
         process_chunk(chunk, split_column_idx, &context).unwrap();
     });
@@ -81,6 +81,10 @@ fn process_chunk(
         write_record(writer, record, context)?
     }
 
+    // Flush all writers to ensure all data is written to disk
+    for writer in writers.values_mut() {
+        writer.flush()?;
+    }
     Ok(())
 }
 
@@ -92,7 +96,7 @@ fn get_writer<'a>(
 ) -> &'a mut BufWriter<File> {
     writers.entry(category.to_string()).or_insert_with(|| {
         let file_path: String = create_category_path(category, context);
-        let file_exist: bool = Path::new(&file_path).exists();
+        let file_exists: bool = Path::new(&file_path).exists();
         let file: File = OpenOptions::new()
             .create(true)
             .append(true)
@@ -101,7 +105,7 @@ fn get_writer<'a>(
         let mut writer: BufWriter<File> = BufWriter::new(file);
 
         // Write headers if the file does not exist
-        if !file_exist {
+        if !file_exists {
             writeln!(
                 writer,
                 "{}",
@@ -138,6 +142,9 @@ fn write_record<W: Write>(
 
 /// Create a path for a category
 fn create_category_path(category: &str, context: &RecordProcessingContext) -> String {
+    if category.contains("..") || category.contains('/') || category.contains("\\") {
+        panic!("Invalid category name: {}", category);
+    }
     let file_path: String = if context.create_directory {
         let category_dir: String = format!("{}/{}", context.output_dir.display(), category);
         // Create a directory for the category if it not exists
@@ -148,7 +155,12 @@ fn create_category_path(category: &str, context: &RecordProcessingContext) -> St
     } else {
         format!("{}/{}.csv", context.output_dir.display(), category)
     };
-    file_path
+
+    let file_path: &Path= Path::new(&file_path);
+    if !file_path.starts_with(&context.output_dir) {
+        panic!("Path traversal detected: {}", file_path.display());
+    }
+    file_path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -184,15 +196,20 @@ mod tests {
     fn test_split_file_by_category() {
         let mut context = TestContext::new();
 
-        let input_file = PathBuf::from("./assets/city.csv");
-        let output_dir = PathBuf::from("./assets/tmp");
+        let input_file = PathBuf::from("assets/city.csv");
+        let output_dir = PathBuf::from("assets/tmp");
         let delimiter = Delimiter::Comma;
         let input_column = "State";
+
+        if !input_file.exists() {
+            panic!("Input file doesn't exist: {}", input_file.display());
+        }
 
         context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
 
-        split_file_by_category(&input_file, &input_column, &output_dir, false, &delimiter).unwrap();
+        split_file_by_category(&input_file, &input_column, &output_dir,
+                               false, &delimiter).unwrap();
         let ak_file_path = format!("{}/AK.csv", output_dir.display());
         let al_file_path = format!("{}/AL.csv", output_dir.display());
 
