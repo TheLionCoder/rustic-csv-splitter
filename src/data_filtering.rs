@@ -83,7 +83,10 @@ fn process_chunk(
 
     // Flush all writers to ensure all data is written to disk
     for writer in writers.values_mut() {
-        writer.flush()?;
+        if let Err(e) = writer.flush() {
+            eprintln!("Failed to flush writer: {}", e);
+            return Err(e);
+        }
     }
     Ok(())
 }
