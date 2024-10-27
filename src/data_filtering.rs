@@ -1,3 +1,5 @@
+use crate::data_loading::{extract_file_name, read_file};
+use crate::delimiter::Delimiter;
 use csv::{Reader, StringRecord};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -6,16 +8,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use crate::data_loading::{extract_file_name, read_file};
-use crate::delimiter::Delimiter;
-
 #[derive(Clone)]
 struct RecordProcessingContext<'a> {
     headers: &'a [&'a str],
     output_dir: &'a Path,
     create_directory: bool,
     file_name: &'a str,
-    delimiter: u8
+    delimiter: u8,
 }
 
 /// Split a CSV file by a category in a column
@@ -37,21 +36,35 @@ pub(crate) fn split_file_by_category(
         output_dir,
         create_directory,
         file_name,
-        delimiter: Delimiter::PIPE
+        delimiter: Delimiter::PIPE,
     };
 
     // Get the index of the column to split by
     let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
 
-    let records: Vec<StringRecord> = reader.records().collect::<Result<_, _>>()?;
+    let mut records_chunk: Vec<StringRecord> = Vec::with_capacity(10_000);
 
-    // process chunks in parallel using Rayon
-    process_records_in_parallel(records, split_column_idx, context)
+    for result in reader.records() {
+        let record: StringRecord = result?;
+        records_chunk.push(record);
+
+        if records_chunk.len() == 10_000 {
+            // process chunks in parallel using Rayon
+            process_records_in_parallel(&records_chunk, split_column_idx, context.clone())?;
+            // Reuse the vector without reallocating memory
+            records_chunk.clear();
+        }
+    }
+
+    if !records_chunk.is_empty() {
+        process_records_in_parallel(&records_chunk, split_column_idx, context)?;
+    }
+    Ok(())
 }
 
 /// Process records in parallel
 fn process_records_in_parallel(
-    records: Vec<StringRecord>,
+    records: &Vec<StringRecord>,
     split_column_idx: usize,
     context: RecordProcessingContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +109,7 @@ fn get_writer<'a>(
     writers: &'a mut HashMap<String, BufWriter<File>>,
     category: &str,
     context: &RecordProcessingContext,
-) -> Result<&'a mut BufWriter<File>, std::io::Error>{
+) -> Result<&'a mut BufWriter<File>, std::io::Error> {
     if !writers.contains_key(category) {
         let file_path: String = create_category_path(category, context);
         let file_exists: bool = Path::new(&file_path).exists();
@@ -121,7 +134,7 @@ fn get_writer<'a>(
         }
         writers.insert(category.to_string(), writer);
     }
-        Ok(writers.get_mut(category).unwrap())
+    Ok(writers.get_mut(category).unwrap())
 }
 
 /// Write a single record in the file
@@ -158,7 +171,7 @@ fn create_category_path(category: &str, context: &RecordProcessingContext) -> St
         format!("{}/{}.csv", context.output_dir.display(), category)
     };
 
-    let file_path: &Path= Path::new(&file_path);
+    let file_path: &Path = Path::new(&file_path);
     if !file_path.starts_with(context.output_dir) {
         panic!("Path traversal detected: {}", file_path.display());
     }
@@ -210,8 +223,7 @@ mod tests {
         context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
 
-        split_file_by_category(&input_file, &input_column, &output_dir,
-                               false, &delimiter).unwrap();
+        split_file_by_category(&input_file, &input_column, &output_dir, false, &delimiter).unwrap();
         let ak_file_path = format!("{}/AK.csv", output_dir.display());
         let al_file_path = format!("{}/AL.csv", output_dir.display());
 

@@ -1,5 +1,5 @@
-use clap::{Arg, ArgMatches};
 use crate::delimiter::Delimiter;
+use clap::{Arg, ArgMatches};
 
 pub(crate) fn parse_cli() -> ArgMatches {
     clap::Command::new("Csv Splitter")
@@ -18,9 +18,9 @@ pub(crate) fn parse_cli() -> ArgMatches {
                 .short('d')
                 .long("delimiter")
                 .default_value(",")
-                .value_parser(clap::builder::ValueParser::new(
-                    |value: &str| value.parse::<Delimiter>()
-                ))
+                .value_parser(clap::builder::ValueParser::new(|value: &str| {
+                    value.parse::<Delimiter>()
+                }))
                 .help("Delimiter used in the CSV file"),
         )
         .arg(
@@ -49,28 +49,21 @@ pub(crate) fn parse_cli() -> ArgMatches {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use super::*;
-    use clap::Command;
     use crate::Delimiter;
+    use clap::Command;
+    use std::str::FromStr;
 
     #[test]
     fn test_parse_cli_command() {
         let matches = Command::new("test")
-            .arg(
-                Arg::new("delimiter")
-                    .short('d')
-                    .long("delimiter")
-            )
+            .arg(Arg::new("delimiter").short('d').long("delimiter"))
             .try_get_matches_from(vec!["test", "-d", ";"])
             .unwrap();
 
-        let delimiter_str= matches.get_one::<String>("delimiter").unwrap();
+        let delimiter_str = matches.get_one::<String>("delimiter").unwrap();
         let delimiter = Delimiter::from_str(delimiter_str).unwrap();
 
-        assert_eq!(
-            delimiter,
-            Delimiter::SemiColon
-        )
+        assert_eq!(delimiter, Delimiter::SemiColon)
     }
 }
