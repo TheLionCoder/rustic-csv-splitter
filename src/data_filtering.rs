@@ -34,6 +34,7 @@ pub(crate) fn split_file_by_category(
     let headers: StringRecord = reader.headers()?.clone();
 
     let headers_vec: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
+    // Get the index of the column to split by
     let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
 
     let context: Arc<RecordProcessingContext> = Arc::new(RecordProcessingContext {
@@ -45,30 +46,31 @@ pub(crate) fn split_file_by_category(
         split_column_idx,
     });
 
-    // Get the index of the column to split by
+    rayon::scope(|s| {
+        let mut records_chunk: Vec<StringRecord> = Vec::with_capacity(10_000);
+        for result in reader.records() {
+            let record: StringRecord = result.unwrap();
+            records_chunk.push(record);
 
-    let mut records_chunk: Vec<StringRecord> = Vec::with_capacity(10_000);
-
-    for result in reader.records() {
-        let record: StringRecord = result?;
-        records_chunk.push(record);
-
-        if records_chunk.len() == 10_000 {
-            let records_chunk_clone = records_chunk.clone();
-            let context_clone: Arc<RecordProcessingContext> = Arc::clone(&context);
-            // process chunks in parallel using Rayon
-
-            rayon::spawn(move || {
-                let _ = process_records_in_parallel(&records_chunk_clone, context_clone);
-            });
-            // Reuse the vector without reallocating memory
-            records_chunk.clear();
+            if records_chunk.len() == 10_000 {
+                let records_chunk_clone = records_chunk.clone();
+                let context_clone: Arc<RecordProcessingContext> = Arc::clone(&context);
+                // process chunks in parallel using Rayon
+                s.spawn(move |_| {
+                    process_records_in_parallel(&records_chunk_clone, context_clone).unwrap();
+                });
+                // Reuse the vector without reallocating memory
+                records_chunk.clear();
+            }
         }
-    }
 
-    if !records_chunk.is_empty() {
-        process_records_in_parallel(&records_chunk, context)?;
-    }
+        if !records_chunk.is_empty() {
+            let context_clone: Arc<RecordProcessingContext> = Arc::clone(&context);
+            s.spawn(move |_| {
+                process_records_in_parallel(&records_chunk, context_clone).unwrap();
+            });
+        }
+    });
     Ok(())
 }
 
