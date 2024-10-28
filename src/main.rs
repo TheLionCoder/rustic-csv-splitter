@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::delimiter::Delimiter;
 use clap::ArgMatches;
@@ -17,7 +17,7 @@ fn main() {
     let create_dir: bool = matches.get_flag("create-dir");
 
     let path: &Path = Path::new(path);
-    let output_dir: &Path = Path::new(output_dir_str);
+    let output_dir: PathBuf = PathBuf::from(output_dir_str);
 
     data_filtering::split_file_by_category(path, input_column, output_dir, create_dir, delimiter)
         .unwrap()

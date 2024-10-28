@@ -6,14 +6,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::string::String;
+use std::sync::Arc;
 
 #[derive(Clone)]
-struct RecordProcessingContext<'a> {
-    headers: &'a [&'a str],
-    output_dir: &'a Path,
+struct RecordProcessingContext {
+    headers: Vec<String>,
+    output_dir: PathBuf,
     create_directory: bool,
-    file_name: &'a str,
+    file_name: String,
     delimiter: u8,
 }
 
@@ -21,23 +23,28 @@ struct RecordProcessingContext<'a> {
 pub(crate) fn split_file_by_category(
     path: &Path,
     input_column: &str,
-    output_dir: &Path,
+    output_dir: PathBuf,
     create_directory: bool,
     delimiter: &Delimiter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut reader: Reader<File> = read_file(path, delimiter)?;
 
-    let file_name: &str = extract_file_name(path)?;
+    let file_name: String = extract_file_name(path)?;
     let headers: StringRecord = reader.headers()?.clone();
-    let headers_vec: Vec<&str> = headers.iter().collect();
 
-    let context: RecordProcessingContext = RecordProcessingContext {
-        headers: &headers_vec,
+
+    let headers_vec: Vec<String> = headers
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let context: Arc<RecordProcessingContext> = Arc::new(RecordProcessingContext {
+        headers: headers_vec,
         output_dir,
         create_directory,
         file_name,
         delimiter: Delimiter::PIPE,
-    };
+    });
 
     // Get the index of the column to split by
     let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
@@ -49,8 +56,14 @@ pub(crate) fn split_file_by_category(
         records_chunk.push(record);
 
         if records_chunk.len() == 10_000 {
+            let records_chunk_clone = records_chunk.clone();
+            let context_clone: Arc<RecordProcessingContext> = Arc::clone(&context);
             // process chunks in parallel using Rayon
-            process_records_in_parallel(&records_chunk, split_column_idx, context.clone())?;
+
+            rayon::spawn(move || {
+                process_records_in_parallel(&records_chunk_clone, split_column_idx, context_clone)
+                    .unwrap();
+            });
             // Reuse the vector without reallocating memory
             records_chunk.clear();
         }
@@ -66,7 +79,7 @@ pub(crate) fn split_file_by_category(
 fn process_records_in_parallel(
     records: &Vec<StringRecord>,
     split_column_idx: usize,
-    context: RecordProcessingContext,
+    context: Arc<RecordProcessingContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     records.par_chunks(10_000).for_each(|chunk| {
         // Each chunk is processed in parallel
@@ -172,7 +185,7 @@ fn create_category_path(category: &str, context: &RecordProcessingContext) -> St
     };
 
     let file_path: &Path = Path::new(&file_path);
-    if !file_path.starts_with(context.output_dir) {
+    if !file_path.starts_with(context.output_dir.clone()) {
         panic!("Path traversal detected: {}", file_path.display());
     }
     file_path.to_string_lossy().into_owned()
@@ -223,7 +236,7 @@ mod tests {
         context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
 
-        split_file_by_category(&input_file, &input_column, &output_dir, false, &delimiter).unwrap();
+        split_file_by_category(&input_file, &input_column, output_dir.clone(), false, &delimiter).unwrap();
         let ak_file_path = format!("{}/AK.csv", output_dir.display());
         let al_file_path = format!("{}/AL.csv", output_dir.display());
 

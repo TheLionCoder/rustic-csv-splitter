@@ -2,6 +2,7 @@ use crate::delimiter::Delimiter;
 use csv::{Reader, ReaderBuilder};
 use std::fs::File;
 use std::path::Path;
+use std::string::String;
 
 #[allow(dead_code)]
 pub(crate) fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<File>, csv::Error> {
@@ -13,7 +14,7 @@ pub(crate) fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<Fil
     Ok(reader)
 }
 
-pub(crate) fn extract_file_name(path: &Path) -> Result<&str, Box<dyn std::error::Error>> {
+pub(crate) fn extract_file_name(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let file_stem: &str = path.file_stem().unwrap().to_str().unwrap();
-    Ok(file_stem)
+    Ok(file_stem.to_string())
 }
