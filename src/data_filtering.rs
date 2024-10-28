@@ -121,7 +121,7 @@ fn get_writer<'a>(
     context: &RecordProcessingContext,
 ) -> Result<&'a mut BufWriter<File>, std::io::Error> {
     if !writers.contains_key(category) {
-        let file_path: String = create_category_path(category, context);
+        let file_path: PathBuf = create_category_path(category, context)?;
         let file_exists: bool = Path::new(&file_path).exists();
         let file: File = OpenOptions::new()
             .create(true)
@@ -181,26 +181,23 @@ fn write_record<W: Write>(
 }
 
 /// Create a path for a category
-fn create_category_path(category: &str, context: &RecordProcessingContext) -> String {
+fn create_category_path(
+    category: &str,
+    context: &RecordProcessingContext,
+) -> Result<PathBuf, std::io::Error> {
     if category.contains("..") || category.contains('/') || category.contains("\\") {
         panic!("Invalid category name: {}", category);
     }
-    let file_path: String = if context.create_directory {
-        let category_dir: String = format!("{}/{}", context.output_dir.display(), category);
-        // Create a directory for the category if it not exists
-        if !Path::new(&category_dir).exists() {
-            fs::create_dir_all(&category_dir).unwrap();
+    let file_path: PathBuf = if context.create_directory {
+        let dir: PathBuf = context.output_dir.join(category);
+        if !dir.exists() {
+            fs::create_dir_all(&dir)?;
         }
-        format!("{}/{}.csv", category_dir, context.file_name)
+        dir.join(format!("{}.csv", context.file_name))
     } else {
-        format!("{}/{}.csv", context.output_dir.display(), category)
+        context.output_dir.join(format!("{}.csv", category))
     };
-
-    let file_path: &Path = Path::new(&file_path);
-    if !file_path.starts_with(context.output_dir.clone()) {
-        panic!("Path traversal detected: {}", file_path.display());
-    }
-    file_path.to_string_lossy().into_owned()
+    Ok(file_path)
 }
 
 #[cfg(test)]
