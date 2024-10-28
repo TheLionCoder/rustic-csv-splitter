@@ -17,6 +17,7 @@ struct RecordProcessingContext {
     create_directory: bool,
     file_name: String,
     delimiter: u8,
+    split_column_idx: usize,
 }
 
 /// Split a CSV file by a category in a column
@@ -32,11 +33,8 @@ pub(crate) fn split_file_by_category(
     let file_name: String = extract_file_name(path)?;
     let headers: StringRecord = reader.headers()?.clone();
 
-
-    let headers_vec: Vec<String> = headers
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let headers_vec: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
+    let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
 
     let context: Arc<RecordProcessingContext> = Arc::new(RecordProcessingContext {
         headers: headers_vec,
@@ -44,10 +42,10 @@ pub(crate) fn split_file_by_category(
         create_directory,
         file_name,
         delimiter: Delimiter::PIPE,
+        split_column_idx,
     });
 
     // Get the index of the column to split by
-    let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
 
     let mut records_chunk: Vec<StringRecord> = Vec::with_capacity(10_000);
 
@@ -61,8 +59,7 @@ pub(crate) fn split_file_by_category(
             // process chunks in parallel using Rayon
 
             rayon::spawn(move || {
-                process_records_in_parallel(&records_chunk_clone, split_column_idx, context_clone)
-                    .unwrap();
+                let _ = process_records_in_parallel(&records_chunk_clone, context_clone);
             });
             // Reuse the vector without reallocating memory
             records_chunk.clear();
@@ -70,7 +67,7 @@ pub(crate) fn split_file_by_category(
     }
 
     if !records_chunk.is_empty() {
-        process_records_in_parallel(&records_chunk, split_column_idx, context)?;
+        process_records_in_parallel(&records_chunk, context)?;
     }
     Ok(())
 }
@@ -78,12 +75,11 @@ pub(crate) fn split_file_by_category(
 /// Process records in parallel
 fn process_records_in_parallel(
     records: &Vec<StringRecord>,
-    split_column_idx: usize,
     context: Arc<RecordProcessingContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     records.par_chunks(10_000).for_each(|chunk| {
         // Each chunk is processed in parallel
-        process_chunk(chunk, split_column_idx, &context).unwrap();
+        process_chunk(chunk, &context).unwrap();
     });
 
     Ok(())
@@ -92,14 +88,13 @@ fn process_records_in_parallel(
 /// Process each chunk and write to the appropriate file
 fn process_chunk(
     chunk: &[StringRecord],
-    split_column_idx: usize,
     context: &RecordProcessingContext,
 ) -> Result<(), std::io::Error> {
     let mut writers: HashMap<String, BufWriter<File>> = HashMap::with_capacity(chunk.len());
 
     for record in chunk {
         let category = record
-            .get(split_column_idx)
+            .get(context.split_column_idx)
             .unwrap_or("unknown")
             .to_string();
 
@@ -131,18 +126,25 @@ fn get_writer<'a>(
             .append(true)
             .open(&file_path)?;
         let mut writer: BufWriter<File> = BufWriter::new(file);
+        let filtered_headers: Vec<String> = context
+            .headers
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, field)| {
+                if idx != context.split_column_idx {
+                    Some(field.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
 
         // Write headers if the file does not exist
         if !file_exists {
             writeln!(
                 writer,
                 "{}",
-                &context
-                    .headers
-                    .iter()
-                    .map(|field| field.to_string())
-                    .collect::<Vec<_>>()
-                    .join(&(context.delimiter as char).to_string())
+                filtered_headers.join(&(context.delimiter as char).to_string())
             )?;
         }
         writers.insert(category.to_string(), writer);
@@ -156,14 +158,22 @@ fn write_record<W: Write>(
     record: &StringRecord,
     context: &RecordProcessingContext,
 ) -> Result<(), std::io::Error> {
+    let filtered_record: Vec<String> = record
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if idx != context.split_column_idx {
+                Some(field.to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
     writeln!(
         writer,
         "{}",
-        record
-            .iter()
-            .map(|field| field.to_string())
-            .collect::<Vec<_>>()
-            .join(&(context.delimiter as char).to_string())
+        filtered_record.join(&(context.delimiter as char).to_string())
     )?;
     Ok(())
 }
@@ -235,19 +245,28 @@ mod tests {
 
         context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
+        context.add_file(output_dir.join("NY.csv"));
+        context.add_file(output_dir.join("CA.csv"));
 
-        split_file_by_category(&input_file, &input_column, output_dir.clone(), false, &delimiter).unwrap();
+        split_file_by_category(
+            &input_file,
+            &input_column,
+            output_dir.clone(),
+            false,
+            &delimiter,
+        )
+        .unwrap();
         let ak_file_path = format!("{}/AK.csv", output_dir.display());
         let al_file_path = format!("{}/AL.csv", output_dir.display());
 
         let ak_data = fs::read_to_string(ak_file_path).unwrap();
         let al_data = fs::read_to_string(al_file_path).unwrap();
 
-        assert!(ak_data.contains("City|State|Population|Latitude|Longitude"));
-        assert!(ak_data.contains("Davidson Landing|AK||65.241944|-165.2716667"));
-        assert!(ak_data.contains("Kenai|AK|7610|60.5544444|-151.2583333"));
+        assert!(ak_data.contains("City|Population|Latitude|Longitude"));
+        assert!(ak_data.contains("Davidson Landing||65.241944|-165.2716667"));
+        assert!(ak_data.contains("Kenai|7610|60.5544444|-151.2583333"));
 
-        assert!(al_data.contains("City|State|Population|Latitude|Longitude"));
-        assert!(al_data.contains("Oakman|AL||33.7133333|-87.38861111"));
+        assert!(al_data.contains("City|Population|Latitude|Longitude"));
+        assert!(al_data.contains("Oakman||33.7133333|-87.38861111"));
     }
 }
