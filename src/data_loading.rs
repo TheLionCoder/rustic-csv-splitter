@@ -4,7 +4,6 @@ use std::fs::File;
 use std::path::Path;
 use std::string::String;
 
-#[allow(dead_code)]
 pub(crate) fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<File>, csv::Error> {
     let reader: Reader<File> = ReaderBuilder::new()
         .has_headers(true)

@@ -19,13 +19,13 @@ impl Delimiter {
 
 impl fmt::Display for Delimiter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s: String = match self {
-            Delimiter::Comma => String::from(","),
-            Delimiter::Pipe => String::from("|"),
-            Delimiter::Tab => String::from("\t"),
-            Delimiter::SemiColon => String::from(";"),
+        let c: char = match self {
+            Delimiter::Comma => ',',
+            Delimiter::Pipe => '|',
+            Delimiter::Tab => '\t',
+            Delimiter::SemiColon => ';'
         };
-        write!(f, "{}", s)
+        write!(f, "{}", c)
     }
 }
 
