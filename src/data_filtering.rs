@@ -92,66 +92,76 @@ fn process_chunk(
     chunk: &[StringRecord],
     context: &RecordProcessingContext,
 ) -> Result<(), std::io::Error> {
-    let mut writers: HashMap<String, BufWriter<File>> = HashMap::with_capacity(chunk.len());
+    // Create a hashmap to store writers for each category in the column
+    let category_writers: HashMap<String, Vec<StringRecord>> =
+        collect_records_by_category(chunk, context);
+
+    for (category, records) in category_writers {
+        write_records_to_file(&category, &records, context)?;
+    }
+    Ok(())
+}
+
+/// Collect the records by category
+fn collect_records_by_category(
+    chunk: &[StringRecord],
+    context: &RecordProcessingContext,
+) -> HashMap<String, Vec<StringRecord>> {
+    let mut category_writers: HashMap<String, Vec<StringRecord>> = HashMap::new();
 
     for record in chunk {
         let category = record
             .get(context.split_column_idx)
             .unwrap_or("unknown")
             .to_string();
-
-        let writer: &mut BufWriter<File> = get_writer(&mut writers, &category, context)?;
-        write_record(writer, record, context)?
+        category_writers
+            .entry(category)
+            .or_insert_with(Vec::new)
+            .push(record.clone());
     }
-
-    // Flush all writers to ensure all data is written to disk
-    for writer in writers.values_mut() {
-        if let Err(e) = writer.flush() {
-            eprintln!("Failed to flush writer: {}", e);
-            return Err(e);
-        }
-    }
-    Ok(())
+    category_writers
 }
 
-/// Get or create a writer for a category
-fn get_writer<'a>(
-    writers: &'a mut HashMap<String, BufWriter<File>>,
+/// Write records to the appropriate file
+fn write_records_to_file(
     category: &str,
+    records: &[StringRecord],
     context: &RecordProcessingContext,
-) -> Result<&'a mut BufWriter<File>, std::io::Error> {
-    if !writers.contains_key(category) {
-        let file_path: PathBuf = create_category_path(category, context)?;
-        let file_exists: bool = Path::new(&file_path).exists();
-        let file: File = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file_path)?;
-        let mut writer: BufWriter<File> = BufWriter::new(file);
+) -> Result<(), std::io::Error> {
+    let file_path: PathBuf = create_category_path(category, context)?;
+    let file: File = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)?;
+    let mut writer: BufWriter<File> = BufWriter::new(file);
+
+    // Write headers if the files don't exist
+    if fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0) == 0 {
         let filtered_headers: Vec<String> = context
             .headers
             .iter()
             .enumerate()
-            .filter_map(|(idx, field)| {
+            .filter_map(|(idx, header)| {
                 if idx != context.split_column_idx {
-                    Some(field.to_string())
+                    Some(header.clone())
                 } else {
                     None
                 }
             })
             .collect::<Vec<_>>();
-
-        // Write headers if the file does not exist
-        if !file_exists {
-            writeln!(
-                writer,
-                "{}",
-                filtered_headers.join(&(context.delimiter as char).to_string())
-            )?;
-        }
-        writers.insert(category.to_string(), writer);
+        writeln!(
+            writer,
+            "{}",
+            filtered_headers.join(&(context.delimiter as char).to_string())
+        )?;
     }
-    Ok(writers.get_mut(category).unwrap())
+
+    // Write records to the file
+    for record in records {
+        write_record(&mut writer, &record, context)?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 /// Write a single record in the file

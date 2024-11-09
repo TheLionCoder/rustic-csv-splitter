@@ -23,7 +23,7 @@ impl fmt::Display for Delimiter {
             Delimiter::Comma => ',',
             Delimiter::Pipe => '|',
             Delimiter::Tab => '\t',
-            Delimiter::SemiColon => ';'
+            Delimiter::SemiColon => ';',
         };
         write!(f, "{}", c)
     }
