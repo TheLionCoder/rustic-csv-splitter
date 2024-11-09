@@ -110,7 +110,7 @@ fn collect_records_by_category(
     let mut category_writers: HashMap<String, Vec<StringRecord>> = HashMap::new();
 
     for record in chunk {
-        let category = record
+        let category: String = record
             .get(context.split_column_idx)
             .unwrap_or("unknown")
             .to_string();
