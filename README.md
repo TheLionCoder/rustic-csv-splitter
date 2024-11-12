@@ -3,7 +3,7 @@
 This project is designed to split a large dataset into multiple smaller files
 based on a specified column value, for default the output CSV files use "|" delimiter.
 
-[!NOTE]: Missing values will be filled with the "unknown" literal
+[!NOTE]: Missing values in the input-column will be filled with the "unknown" literal
 
 ## Instalation
 
