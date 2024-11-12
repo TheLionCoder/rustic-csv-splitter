@@ -110,10 +110,18 @@ fn collect_records_by_category(
     let mut category_writers: HashMap<String, Vec<StringRecord>> = HashMap::new();
 
     for record in chunk {
-        let category: String = record
+        let mut filled_record: StringRecord = StringRecord::new();
+        for field in record.iter() {
+            // Fill null values with "unknown"
+            let value: &str = if field.is_empty() { "unknown" } else { field };
+            filled_record.push_field(value);
+        }
+
+        let category: String = filled_record
             .get(context.split_column_idx)
             .unwrap_or("unknown")
             .to_string();
+
         category_writers
             .entry(category)
             .or_insert_with(Vec::new)
