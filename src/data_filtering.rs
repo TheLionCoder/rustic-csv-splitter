@@ -37,6 +37,10 @@ pub(crate) fn split_file_by_category(
     // Get the index of the column to split by
     let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
 
+    let records: Vec<StringRecord> = reader.records()
+        .filter_map(Result::ok)
+        .collect();
+
     let context: Arc<RecordProcessingContext> = Arc::new(RecordProcessingContext {
         headers: headers_vec,
         output_dir,
@@ -46,70 +50,34 @@ pub(crate) fn split_file_by_category(
         split_column_idx,
     });
 
-    rayon::scope(|s| {
-        let mut records_chunk: Vec<StringRecord> = Vec::with_capacity(10_000);
-        for result in reader.records() {
-            let record: StringRecord = result.unwrap();
-            records_chunk.push(record);
-
-            if records_chunk.len() == 10_000 {
-                let records_chunk_clone = records_chunk.clone();
-                let context_clone: Arc<RecordProcessingContext> = Arc::clone(&context);
-                // process chunks in parallel using Rayon
-                s.spawn(move |_| {
-                    process_records_in_parallel(&records_chunk_clone, context_clone).unwrap();
-                });
-                // Reuse the vector without reallocating memory
-                records_chunk.clear();
-            }
-        }
-
-        if !records_chunk.is_empty() {
-            let context_clone: Arc<RecordProcessingContext> = Arc::clone(&context);
-            s.spawn(move |_| {
-                process_records_in_parallel(&records_chunk, context_clone).unwrap();
-            });
-        }
-    });
+    process_records(&records,context.as_ref())?;
     Ok(())
-}
 
-/// Process records in parallel
-fn process_records_in_parallel(
-    records: &Vec<StringRecord>,
-    context: Arc<RecordProcessingContext>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    records.par_chunks(10_000).for_each(|chunk| {
-        // Each chunk is processed in parallel
-        process_chunk(chunk, &context).unwrap();
-    });
-
-    Ok(())
 }
 
 /// Process each chunk and write to the appropriate file
-fn process_chunk(
-    chunk: &[StringRecord],
+fn process_records(
+    records: &[StringRecord],
     context: &RecordProcessingContext,
 ) -> Result<(), std::io::Error> {
     // Create a hashmap to store writers for each category in the column
     let category_writers: HashMap<String, Vec<StringRecord>> =
-        collect_records_by_category(chunk, context);
+        collect_records_by_category(records, context);
 
-    for (category, records) in category_writers {
-        write_records_to_file(&category, &records, context)?;
-    }
+    category_writers.par_iter().for_each(|(category, records)| {
+        write_records_to_file(category, records, context).unwrap();
+    });
     Ok(())
 }
 
 /// Collect the records by category
 fn collect_records_by_category(
-    chunk: &[StringRecord],
+    records: &[StringRecord],
     context: &RecordProcessingContext,
 ) -> HashMap<String, Vec<StringRecord>> {
     let mut category_writers: HashMap<String, Vec<StringRecord>> = HashMap::new();
 
-    for record in chunk {
+    for record in records {
         let mut filled_record: StringRecord = StringRecord::new();
         for field in record.iter() {
             // Fill null values with "unknown"
