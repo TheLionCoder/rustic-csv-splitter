@@ -7,6 +7,7 @@ mod cli_parsing;
 mod data_filtering;
 mod data_loading;
 mod delimiter;
+mod record_context;
 
 fn main() {
     let matches: ArgMatches = cli_parsing::parse_cli();
