@@ -2,8 +2,7 @@ use crate::data_loading::{extract_file_name, read_file};
 use crate::delimiter::Delimiter;
 use crate::record_context::RecordProcessingContext;
 use clap::Error;
-use csv::{Reader, StringRecord, Writer, WriterBuilder};
-use rayon::prelude::*;
+use csv::{Reader, StringRecord, StringRecordsIter, Writer, WriterBuilder};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -61,36 +60,67 @@ fn write_records_to_csv(
 ) -> Result<(), Error> {
     let headers_written: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
-    reader.records().par_bridge().for_each(|result| {
+    let mut record_iter: StringRecordsIter<File> = reader.records();
+    let mut chunk: Vec<_> = Vec::with_capacity(10_000);
+
+    while let Some(result) = record_iter.next() {
         let record: StringRecord = result.unwrap();
-        let category = get_category(&record, context);
-        let mut writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
-            context.writers.lock().unwrap();
-        let writer: &mut Writer<BufWriter<File>> =
-            writers.entry(category.clone()).or_insert_with(|| {
-                let file_path: PathBuf = create_category_path(&category, context).unwrap();
-                let file: File = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&file_path)
-                    .unwrap();
-                let buf_writer: BufWriter<File> = BufWriter::new(file);
-                WriterBuilder::new()
-                    .delimiter(context.delimiter)
-                    .from_writer(buf_writer)
-            });
+        chunk.push(record);
+
+        if chunk.len() == 10_000 {
+            process_chunk(&chunk, &context, &headers_written)?;
+            chunk.clear()
+        }
+    }
+        if !chunk.is_empty() {
+            process_chunk(&*chunk, &context, &headers_written)?;
+        }
+
+    Ok(())
+}
+
+/// Process records in parallel
+fn process_chunk(
+    chunk: &[StringRecord],
+    context: &RecordProcessingContext,
+    headers_written: &Arc<AtomicBool>
+) -> Result<(), std::io::Error> {
+    let writers: HashMap<String, Vec<StringRecord>> = chunk.into_iter()
+        .fold(HashMap::new(), |mut acc, record| {
+            let category: String = get_category(record, context);
+            let filtered_records: StringRecord = context.header_indexes
+                .iter()
+                .filter_map(|&idx| record.get(idx).map(|field| field.to_string()))
+                .collect();
+            acc.entry(category).or_default().push(filtered_records);
+            acc
+        });
+
+    let mut context_writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> = context.writers.lock().unwrap();
+    for (category, records) in writers {
+        let writer: &mut Writer<BufWriter<File>> = context_writers
+            .entry(category.clone()).or_insert_with(|| {
+            let file_path: PathBuf = create_category_path(&category, context).unwrap();
+            let file: File = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file_path).unwrap();
+
+            let buf_writer: BufWriter<File> = BufWriter::new(file);
+            WriterBuilder::new()
+                .delimiter(context.delimiter)
+                .from_writer(buf_writer)
+        });
         if !headers_written.load(Ordering::SeqCst) {
-            writer.write_record(&context.headers).unwrap();
+            writer.write_record(&context.headers)?;
             headers_written.store(true, Ordering::SeqCst);
         }
-        let filtered_record: StringRecord = context
-            .header_indexes
-            .iter()
-            .filter_map(|&idx| record.get(idx).map(|field| field.to_string()))
-            .collect();
-        writer.write_record(&filtered_record).unwrap();
-        writer.flush().unwrap()
-    });
+
+        for record in records {
+            writer.write_record(&record)?;
+        }
+        writer.flush()?;
+    }
     Ok(())
 }
 
