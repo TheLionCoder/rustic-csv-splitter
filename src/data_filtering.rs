@@ -4,13 +4,15 @@ use crate::record_context::RecordProcessingContext;
 use clap::Error;
 use csv::{Reader, StringRecord, StringRecordsIter, Writer, WriterBuilder};
 use std::collections::HashMap;
-use std::fs;
+use std::{fs};
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::string::String;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+use rayon::prelude::*;
 
 /// Split a CSV file by a category in a column
 pub(crate) fn split_file_by_category(
@@ -60,20 +62,20 @@ fn write_records_to_csv(
 ) -> Result<(), Error> {
     let headers_written: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
-    let mut record_iter: StringRecordsIter<File> = reader.records();
+    let record_iter: StringRecordsIter<File> = reader.records();
     let mut chunk: Vec<_> = Vec::with_capacity(10_000);
 
-    while let Some(result) = record_iter.next() {
+    for result in record_iter {
         let record: StringRecord = result.unwrap();
         chunk.push(record);
 
         if chunk.len() == 10_000 {
-            process_chunk(&chunk, &context, &headers_written)?;
+            process_chunk(&chunk, context, &headers_written)?;
             chunk.clear()
         }
     }
         if !chunk.is_empty() {
-            process_chunk(&*chunk, &context, &headers_written)?;
+            process_chunk(&chunk, context, &headers_written)?;
         }
 
     Ok(())
@@ -85,14 +87,21 @@ fn process_chunk(
     context: &RecordProcessingContext,
     headers_written: &Arc<AtomicBool>
 ) -> Result<(), std::io::Error> {
-    let writers: HashMap<String, Vec<StringRecord>> = chunk.into_iter()
-        .fold(HashMap::new(), |mut acc, record| {
+    let writers: HashMap<String, Vec<StringRecord>> = chunk
+        .par_iter()
+        .fold_with(HashMap::new(), |mut acc: HashMap<String, Vec<StringRecord>>, record| {
             let category: String = get_category(record, context);
             let filtered_records: StringRecord = context.header_indexes
                 .iter()
                 .filter_map(|&idx| record.get(idx).map(|field| field.to_string()))
                 .collect();
             acc.entry(category).or_default().push(filtered_records);
+            acc
+        })
+        .reduce(HashMap::new, |mut acc, map| {
+            for (key, mut value) in map {
+                acc.entry(key).or_default().append(&mut value);
+            }
             acc
         });
 
