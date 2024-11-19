@@ -6,6 +6,7 @@ use std::string::String;
 
 pub(crate) fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<File>, csv::Error> {
     let reader: Reader<File> = ReaderBuilder::new()
+        .buffer_capacity(16 * 1024 * 1024)
         .has_headers(true)
         .delimiter(delimiter.clone().into())
         .from_path(path)?;

@@ -1,15 +1,13 @@
 use crate::data_loading::{extract_file_name, read_file};
 use crate::delimiter::Delimiter;
 use crate::record_context::RecordProcessingContext;
-use clap::Error;
 use csv::{Reader, StringRecord, StringRecordsIter, Writer, WriterBuilder};
 use std::collections::HashMap;
-use std::{fs};
+use std::fs;
 use std::fs::{File, OpenOptions};
-use std::io::BufWriter;
+use std::io::{BufWriter, Error};
 use std::path::{Path, PathBuf};
 use std::string::String;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rayon::prelude::*;
@@ -60,70 +58,94 @@ fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
 ) -> Result<(), Error> {
-    let headers_written: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let chunk_size: usize = 100_000;
 
     let record_iter: StringRecordsIter<File> = reader.records();
-    let mut chunk: Vec<_> = Vec::with_capacity(10_000);
+    let mut chunk: Vec<_> = Vec::with_capacity(chunk_size);
 
     for result in record_iter {
-        let record: StringRecord = result.unwrap();
+        let record: StringRecord = result?;
         chunk.push(record);
 
-        if chunk.len() == 10_000 {
-            process_chunk(&chunk, context, &headers_written)?;
+        if chunk.len() == chunk_size {
+            process_chunk(&chunk, context)?;
             chunk.clear()
         }
     }
-        if !chunk.is_empty() {
-            process_chunk(&chunk, context, &headers_written)?;
-        }
+    if !chunk.is_empty() {
+        process_chunk(&chunk, context)?;
+    }
 
     Ok(())
 }
 
 /// Process records in parallel
 fn process_chunk(
-    chunk: &[StringRecord],
+    chunk: &Vec<StringRecord>,
     context: &RecordProcessingContext,
-    headers_written: &Arc<AtomicBool>
-) -> Result<(), std::io::Error> {
-    let writers: HashMap<String, Vec<StringRecord>> = chunk
+) -> Result<(), Error> {
+    let writers: HashMap<String, Vec<StringRecord>> = filter_records(chunk, context);
+    write_records(writers, context)?;
+    Ok(())
+}
+
+/// Filter records by category
+fn filter_records(
+    chunk: &Vec<StringRecord>,
+    context: &RecordProcessingContext,
+) -> HashMap<String, Vec<StringRecord>> {
+    chunk
         .par_iter()
-        .fold_with(HashMap::new(), |mut acc: HashMap<String, Vec<StringRecord>>, record| {
-            let category: String = get_category(record, context);
-            let filtered_records: StringRecord = context.header_indexes
-                .iter()
-                .filter_map(|&idx| record.get(idx).map(|field| field.to_string()))
-                .collect();
-            acc.entry(category).or_default().push(filtered_records);
-            acc
-        })
+        .fold_with(
+            HashMap::new(),
+            |mut acc: HashMap<String, Vec<StringRecord>>, record| {
+                let category: String = get_category(record, context);
+                let filtered_records: StringRecord = context
+                    .header_indexes
+                    .iter()
+                    .filter_map(|&idx| record.get(idx).map(|field| field.to_string()))
+                    .collect();
+                acc.entry(category).or_default().push(filtered_records);
+                acc
+            },
+        )
         .reduce(HashMap::new, |mut acc, map| {
             for (key, mut value) in map {
                 acc.entry(key).or_default().append(&mut value);
             }
             acc
-        });
+        })
+}
 
-    let mut context_writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> = context.writers.lock().unwrap();
+/// Write records to CSV file
+fn write_records(
+    writers: HashMap<String, Vec<StringRecord>>,
+    context: &RecordProcessingContext,
+) -> Result<(), Error> {
+    let mut context_writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
+        context.writers.lock().unwrap();
     for (category, records) in writers {
-        let writer: &mut Writer<BufWriter<File>> = context_writers
-            .entry(category.clone()).or_insert_with(|| {
-            let file_path: PathBuf = create_category_path(&category, context).unwrap();
-            let file: File = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&file_path).unwrap();
+        let writer: &mut Writer<BufWriter<File>> =
+            context_writers.entry(category.clone()).or_insert_with(|| {
+                let file_path: PathBuf = create_category_path(&category, context).unwrap();
+                let file_exists: bool = file_path.exists();
+                let file: File = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file_path)
+                    .unwrap();
 
-            let buf_writer: BufWriter<File> = BufWriter::new(file);
-            WriterBuilder::new()
-                .delimiter(context.delimiter)
-                .from_writer(buf_writer)
-        });
-        if !headers_written.load(Ordering::SeqCst) {
-            writer.write_record(&context.headers)?;
-            headers_written.store(true, Ordering::SeqCst);
-        }
+                let buf_writer: BufWriter<File> = BufWriter::new(file);
+                let mut csv_writer: Writer<BufWriter<File>> = WriterBuilder::new()
+                    .delimiter(context.delimiter)
+                    .from_writer(buf_writer);
+
+                if !file_exists {
+                    csv_writer.write_record(&context.headers).unwrap();
+                }
+
+                csv_writer
+            });
 
         for record in records {
             writer.write_record(&record)?;
@@ -170,7 +192,7 @@ fn get_header_indexes(headers: &StringRecord, file_headers: &StringRecord) -> Ve
 fn create_category_path(
     category: &str,
     context: &RecordProcessingContext,
-) -> Result<PathBuf, std::io::Error> {
+) -> Result<PathBuf, Error> {
     if category.contains("..") || category.contains('/') || category.contains("\\") {
         panic!("Invalid category name: {}", category);
     }
@@ -189,8 +211,8 @@ fn create_category_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use lazy_static::lazy_static;
+    use std::path::PathBuf;
 
     lazy_static! {
         static ref FILE_HEADERS: StringRecord = StringRecord::from(vec!["city", "state"]);
@@ -223,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_split_file_by_category() {
-        let mut context = TestContext::new();
+        let context = TestContext::new();
 
         let input_file = PathBuf::from("assets/city.csv");
         let output_dir = PathBuf::from("assets/tmp");
@@ -234,10 +256,10 @@ mod tests {
             panic!("Input file doesn't exist: {}", input_file.display());
         }
 
-        context.add_file(output_dir.join("AK.csv"));
+        /*    context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
         context.add_file(output_dir.join("NY.csv"));
-        context.add_file(output_dir.join("CA.csv"));
+        context.add_file(output_dir.join("CA.csv"));*/
 
         split_file_by_category(
             &input_file,
@@ -253,11 +275,11 @@ mod tests {
         let ak_data = fs::read_to_string(ak_file_path).unwrap();
         let al_data = fs::read_to_string(al_file_path).unwrap();
 
-        //assert!(ak_data.contains("City|Population|Latitude|Longitude"));
+        assert!(ak_data.contains("City|Population|Latitude|Longitude"));
         assert!(ak_data.contains("Davidson Landing||65.241944|-165.2716667"));
         assert!(ak_data.contains("Kenai|7610|60.5544444|-151.2583333"));
 
-        //assert!(al_data.contains("City|Population|Latitude|Longitude"));
+        assert!(al_data.contains("City|Population|Latitude|Longitude"));
         assert!(al_data.contains("Oakman||33.7133333|-87.38861111"));
     }
 
