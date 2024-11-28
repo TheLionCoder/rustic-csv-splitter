@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_split_file_by_category() {
-        let context = TestContext::new();
+        let mut context = TestContext::new();
 
         let input_file = PathBuf::from("assets/city.csv");
         let output_dir = PathBuf::from("assets/tmp");
@@ -256,10 +256,10 @@ mod tests {
             panic!("Input file doesn't exist: {}", input_file.display());
         }
 
-        /*    context.add_file(output_dir.join("AK.csv"));
+        context.add_file(output_dir.join("AK.csv"));
         context.add_file(output_dir.join("AL.csv"));
         context.add_file(output_dir.join("NY.csv"));
-        context.add_file(output_dir.join("CA.csv"));*/
+        context.add_file(output_dir.join("CA.csv"));
 
         split_file_by_category(
             &input_file,
