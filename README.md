@@ -22,10 +22,10 @@ To run the program, use the followings commands:
 cargo build --release
 ```
 
-_then:_
+_then_:
 
 ```sh
-cargo target/reelase/csv-splitter
+cargo target/release/rustic-csv-splitter
 ```
 
 ## Arguments
@@ -42,5 +42,5 @@ of the column value`
 To split a csv file, without create directories for each column value
 
 ```sh
-cargo run --release -- -p assets/city.csv -c "State" -o assets/tmp/
+cargo target/release/rustic-csv-splitter -p assets/city.csv -c "State" -o assets/tmp/
 ```
