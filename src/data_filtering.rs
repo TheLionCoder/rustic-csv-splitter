@@ -1,60 +1,17 @@
-use crate::data_loading::{extract_file_name, read_file};
-use crate::delimiter::Delimiter;
 use crate::record_context::RecordProcessingContext;
 use csv::{Reader, StringRecord, StringRecordsIter, Writer, WriterBuilder};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Error};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::string::String;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::MutexGuard;
 
 use rayon::prelude::*;
 
-/// Split a CSV file by a category in a column
-pub(crate) fn split_file_by_category(
-    path: &Path,
-    input_column: &str,
-    output_dir: PathBuf,
-    create_directory: bool,
-    delimiter: &Delimiter,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader: Reader<File> = read_file(path, delimiter)?;
-
-    let file_name: String = extract_file_name(path)?;
-    let headers: StringRecord = reader.headers()?.clone();
-
-    let category_writers: Arc<Mutex<HashMap<String, Writer<BufWriter<File>>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    // Get the index of the column to split by
-    let split_column_idx: usize = headers.iter().position(|h| h == input_column).unwrap();
-    let file_headers: StringRecord = get_headers(&headers, split_column_idx);
-    let header_indexes: Vec<usize> = get_header_indexes(&headers, &file_headers);
-
-    let context: Arc<RecordProcessingContext> = Arc::new(RecordProcessingContext {
-        headers: file_headers,
-        output_dir,
-        create_directory,
-        file_name,
-        delimiter: Delimiter::PIPE,
-        split_column_idx,
-        writers: category_writers.clone(),
-        header_indexes,
-    });
-
-    write_records_to_csv(&mut reader, &context)?;
-    let mut writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
-        category_writers.lock().unwrap();
-    for writer in writers.values_mut() {
-        writer.flush().unwrap();
-    }
-
-    Ok(())
-}
-
 /// Write records to CSV file
-fn write_records_to_csv(
+pub(crate) fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
 ) -> Result<(), Error> {
@@ -165,7 +122,7 @@ fn get_category(record: &StringRecord, context: &RecordProcessingContext) -> Str
 }
 
 /// Get headers
-fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> StringRecord {
+pub(crate) fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> StringRecord {
     let headers: Vec<String> = current_headers
         .iter()
         .enumerate()
@@ -181,7 +138,10 @@ fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> String
 }
 
 /// Get the header indexes
-fn get_header_indexes(headers: &StringRecord, file_headers: &StringRecord) -> Vec<usize> {
+pub(crate) fn get_header_indexes(
+    headers: &StringRecord,
+    file_headers: &StringRecord,
+) -> Vec<usize> {
     file_headers
         .iter()
         .filter_map(|header| headers.iter().position(|h| h == header))
