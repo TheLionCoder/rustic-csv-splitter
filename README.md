@@ -44,6 +44,7 @@ To split a csv file, without create directories for each column value
 
 ````sh
 cargo target/release/rustic-csv-splitter -p assets/city.csv -c "State" -o assets/tmp/
+````
 
 _The result will be like:_
 
@@ -56,4 +57,3 @@ assets/
 │   ├── CA.csv
 │   └── NY.csv
 ```
-````
