@@ -3,9 +3,10 @@
 This project is designed to split a large dataset into multiple smaller files
 based on a specified column value, for default the output CSV files use "|" delimiter.
 
-[!NOTE]: Missing values in the input-column will be filled with the "unknown" literal
+> [!NOTE]
+> Missing values in the input-column will be filled with the "unknown" literal
 
-## Instalation
+## Installation
 
 Clone the repository:
 
@@ -41,6 +42,17 @@ of the column value`
 
 To split a csv file, without create directories for each column value
 
-```sh
+````sh
 cargo target/release/rustic-csv-splitter -p assets/city.csv -c "State" -o assets/tmp/
-```
+
+_The result will be like:_
+
+```sh
+assets/
+├── city.csv
+├── data
+│   ├── AK.csv
+│   ├── AL.csv
+│   ├── CA.csv
+│   └── NY.csv
+````
