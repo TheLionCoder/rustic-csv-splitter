@@ -1,4 +1,4 @@
-# CSV Splitter
+# :crab: CSV Splitter
 
 This project is designed to split a large dataset into multiple smaller files
 based on a specified column value, for default the output CSV files use "|" delimiter.
@@ -6,7 +6,9 @@ based on a specified column value, for default the output CSV files use "|" deli
 > [!NOTE]
 > Missing values in the input-column will be filled with the "unknown" literal
 
-## Installation
+---
+
+## :package: Installation
 
 Clone the repository:
 
@@ -15,7 +17,9 @@ git clone git@github.com:TheLionCoder/rustic-csv-splitter.git
 cd rustic-csv-splitter
 ```
 
-## Usage
+---
+
+## :hammer_and_wrench: Usage
 
 To run the program, use the followings commands:
 
@@ -42,9 +46,9 @@ of the column value`
 
 To split a csv file, without create directories for each column value
 
-````sh
+```sh
 cargo target/release/rustic-csv-splitter -p assets/city.csv -c "State" -o assets/tmp/
-````
+```
 
 _The result will be like:_
 
