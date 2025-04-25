@@ -5,6 +5,8 @@ based on a specified column value, for default the output CSV files use "|" deli
 
 > [!NOTE]
 > Missing values in the input-column will be filled with the "unknown" literal
+> [!WARNING]
+> The input-column should be the same for all the files.
 
 ---
 
@@ -47,7 +49,9 @@ of the column value`
 To split a csv file, without create directories for each column value
 
 ```sh
-cargo target/release/rustic-csv-splitter -p assets/city.csv -c "State" -o assets/tmp/
+cargo target/release/rustic-csv-splitter \
+    -p assets/city.csv assets/other_datase.csv \
+    -c "State" -o assets/tmp/
 ```
 
 _The result will be like:_

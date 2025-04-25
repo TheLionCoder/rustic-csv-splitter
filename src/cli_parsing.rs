@@ -10,8 +10,10 @@ pub(crate) fn parse_cli() -> ArgMatches {
             Arg::new("path")
                 .short('p')
                 .long("path")
+                .num_args(1..)
+                .value_parser(clap::value_parser!(std::path::PathBuf))
                 .required(true)
-                .help("Path to the CSV file to split"),
+                .help("Path(s) to the CSV file(s) to split"),
         )
         .arg(
             Arg::new("delimiter")
@@ -35,6 +37,7 @@ pub(crate) fn parse_cli() -> ArgMatches {
                 .short('o')
                 .long("dir")
                 .required(true)
+                .value_parser(clap::value_parser!(std::path::PathBuf))
                 .help("Output directory to save the split files"),
         )
         .arg(
