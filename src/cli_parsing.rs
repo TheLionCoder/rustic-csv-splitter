@@ -1,4 +1,4 @@
-use crate::delimiter::Delimiter;
+use crate::context::Delimiter;
 use clap::{Arg, ArgMatches};
 
 pub(crate) fn parse_cli() -> ArgMatches {

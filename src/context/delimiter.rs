@@ -3,7 +3,7 @@ use std::str::FromStr;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) enum Delimiter {
+pub enum Delimiter {
     Comma,
     Pipe,
     Tab,

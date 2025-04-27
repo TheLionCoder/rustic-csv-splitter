@@ -8,15 +8,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::{error, event, span, Level, Span};
 
-use crate::data_loading::{extract_file_name, read_file};
-use crate::delimiter::Delimiter;
-use crate::record_context::RecordProcessingContext;
+use crate::context::record_context::RecordProcessingContext;
+use crate::context::Delimiter;
+use crate::processing::data_filtering;
+use crate::processing::data_loading::{extract_file_name, read_file};
 
 mod cli_parsing;
-mod data_filtering;
-mod data_loading;
-mod delimiter;
-mod record_context;
+mod context;
+mod processing;
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -35,7 +34,13 @@ fn main() {
 
     paths.for_each(|path| {
         event!(Level::INFO, "Reading file: {:?}", path);
-        let mut reader: Reader<File> = read_file(path, delimiter).unwrap();
+        let mut reader: Reader<File> = match read_file(path, delimiter) {
+            Ok(reader) => reader,
+            Err(err) => {
+                error!("Error reading file: {:?}: {}. Skipping...\n", path, err);
+                return;
+            }
+        };
         let file_name: String = extract_file_name(path).unwrap();
         let headers: StringRecord = reader.headers().unwrap().clone();
 
@@ -46,7 +51,10 @@ fn main() {
         let split_column_idx: usize = match headers.iter().position(|h| h == input_column) {
             Some(idx) => idx,
             None => {
-                error!("Column {} not found in file headers \n", input_column);
+                error!(
+                    "Column '{}' not found in file headers. Skipping...\n",
+                    input_column
+                );
                 return;
             }
         };

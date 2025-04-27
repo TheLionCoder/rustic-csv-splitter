@@ -1,4 +1,4 @@
-use crate::record_context::RecordProcessingContext;
+use crate::context::RecordProcessingContext;
 use csv::{Reader, StringRecord, StringRecordsIter, Writer, WriterBuilder};
 use std::collections::HashMap;
 use std::fs;
@@ -10,8 +10,9 @@ use std::sync::MutexGuard;
 
 use rayon::prelude::*;
 
-/// Write records to CSV file
-pub(crate) fn write_records_to_csv(
+/// Writes records from a CSV reader to a processing pipeline in chunks,
+/// improving memory usage for large datasets.
+pub fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
 ) -> Result<(), Error> {
@@ -36,7 +37,48 @@ pub(crate) fn write_records_to_csv(
     Ok(())
 }
 
-/// Process records in parallel
+/// Processes a chunk of `StringRecord` data by filtering and writing the records
+/// based on the provided processing context.
+///
+/// # Arguments
+/// * `chunk` - A reference to a vector of `StringRecord` that represents the input data
+///   to be processed in the current chunk.
+/// * `context` - A reference to a `RecordProcessingContext` that contains configuration
+///   and state information necessary for processing the records.
+///
+/// # Returns
+/// * `Ok(())` on successful processing of the chunk, which includes filtering and writing
+///   the records.
+/// * `Err(Error)` if an error occurs during processing, such as during
+///   filtering or writing operations.
+///
+/// # Behavior
+/// 1. Filters the input chunk of `StringRecord` using the `filter_records` function,
+///    which returns a `HashMap` where the keys are strings and the values are vectors
+///    of `StringRecord` that meet certain criteria.
+/// 2. Write the filtered records to an output using the `write_records` function.
+/// 3. Returns an `Err` if any step fails, or `Ok(())` if processing completes successfully.
+///
+/// # Dependencies
+/// This function relies on the following:
+/// * `filter_records` - A function that takes a chunk of records and a context and
+///   produces a filtered map of records.
+/// * `write_records` - A function that writes the filtered records to an output
+///   based on the context.
+///
+/// # Errors
+/// This function propagates any errors returned by `write_records` and may raise
+/// errors caused by issues in filtering or writing records.
+///
+/// # Example
+/// ```
+/// let chunk = vec![/* some StringRecord data */];
+/// let context = RecordProcessingContext::new(/* some context configuration */);
+/// match process_chunk(&chunk, &context) {
+///     Ok(()) => println!("Chunk processed successfully."),
+///     Err(e) => eprintln!("Error processing chunk: {}", e),
+/// }
+/// ```
 fn process_chunk(
     chunk: &Vec<StringRecord>,
     context: &RecordProcessingContext,
@@ -46,7 +88,8 @@ fn process_chunk(
     Ok(())
 }
 
-/// Filter records by category
+/// Filters and groups record from a chunk based on their category.
+///
 fn filter_records(
     chunk: &Vec<StringRecord>,
     context: &RecordProcessingContext,
@@ -74,7 +117,8 @@ fn filter_records(
         })
 }
 
-/// Write records to CSV file
+
+/// Writes records to corresponding file outputs, categorized by a given `writer` map.
 fn write_records(
     writers: HashMap<String, Vec<StringRecord>>,
     context: &RecordProcessingContext,
@@ -112,7 +156,7 @@ fn write_records(
     Ok(())
 }
 
-/// Get the category value from a record
+/// Retrieves the category value from a given `StringRecord` based on the provided processing context.
 #[inline]
 fn get_category(record: &StringRecord, context: &RecordProcessingContext) -> String {
     match record.get(context.split_column_idx) {
@@ -121,8 +165,8 @@ fn get_category(record: &StringRecord, context: &RecordProcessingContext) -> Str
     }
 }
 
-/// Get headers
-pub(crate) fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> StringRecord {
+/// Extracts headers from a given `StringRecord`, excluding the field in a specified column.
+pub fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> StringRecord {
     let headers: Vec<String> = current_headers
         .iter()
         .enumerate()
@@ -137,18 +181,15 @@ pub(crate) fn get_headers(current_headers: &StringRecord, split_column_id: usize
     StringRecord::from(headers)
 }
 
-/// Get the header indexes
-pub(crate) fn get_header_indexes(
-    headers: &StringRecord,
-    file_headers: &StringRecord,
-) -> Vec<usize> {
+/// Retrieves the indexes of specified headers within a set of file headers.
+pub fn get_header_indexes(headers: &StringRecord, file_headers: &StringRecord) -> Vec<usize> {
     file_headers
         .iter()
         .filter_map(|header| headers.iter().position(|h| h == header))
         .collect()
 }
 
-/// Create a path for a category
+/// Creates a file path for a category, ensuring proper directory structure and input validation.
 fn create_category_path(
     category: &str,
     context: &RecordProcessingContext,
@@ -172,14 +213,11 @@ fn create_category_path(
 mod tests {
     use super::*;
     use std::sync::LazyLock;
-    
-    static FILE_HEADERS: LazyLock<StringRecord> = LazyLock::new( || {
-        StringRecord::from(vec!["city", "state"])
-    });
-    static HEADERS: LazyLock<StringRecord> = LazyLock::new(|| {
-        StringRecord::from(vec!["city", "state", "year"])
-    });
-    
+
+    static FILE_HEADERS: LazyLock<StringRecord> =
+        LazyLock::new(|| StringRecord::from(vec!["city", "state"]));
+    static HEADERS: LazyLock<StringRecord> =
+        LazyLock::new(|| StringRecord::from(vec!["city", "state", "year"]));
 
     #[test]
     fn test_get_headers() {
