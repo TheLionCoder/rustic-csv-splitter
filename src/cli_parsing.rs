@@ -47,6 +47,15 @@ pub(crate) fn parse_cli() -> ArgMatches {
                 .action(clap::ArgAction::SetTrue)
                 .help("Save the split files in a directory with the name of the column value"),
         )
+        .arg(
+            Arg::new("chunk-size")
+                .short('s')
+                .long("chunk-size")
+                .default_value("100000")
+                .value_parser(clap::value_parser!(usize))
+                .help(
+                    "Number of records to read from the CSV file before writing to a new file", )
+        )
         .get_matches()
 }
 

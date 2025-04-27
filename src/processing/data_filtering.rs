@@ -1,9 +1,8 @@
 use crate::context::RecordProcessingContext;
-use csv::{Reader, StringRecord, StringRecordsIter, Writer, WriterBuilder};
+use csv::{Reader, StringRecord, Writer, WriterBuilder};
 use std::collections::HashMap;
-use std::fs;
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Error};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, ErrorKind};
 use std::path::PathBuf;
 use std::string::String;
 use std::sync::MutexGuard;
@@ -15,17 +14,15 @@ use rayon::prelude::*;
 pub fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
-) -> Result<(), Error> {
-    let chunk_size: usize = 100_000;
+) -> Result<(), io::Error> {
 
-    let record_iter: StringRecordsIter<File> = reader.records();
-    let mut chunk: Vec<_> = Vec::with_capacity(chunk_size);
+    let mut chunk: Vec<_> = Vec::with_capacity(*context.chunk_size);
 
-    for result in record_iter {
+    for result in reader.records() {
         let record: StringRecord = result?;
         chunk.push(record);
 
-        if chunk.len() == chunk_size {
+        if chunk.len() >= *context.chunk_size {
             process_chunk(&chunk, context)?;
             chunk.clear()
         }
@@ -38,119 +35,101 @@ pub fn write_records_to_csv(
 }
 
 /// Processes a chunk of `StringRecord` data by filtering and writing the records
-/// based on the provided processing context.
-///
-/// # Arguments
-/// * `chunk` - A reference to a vector of `StringRecord` that represents the input data
-///   to be processed in the current chunk.
-/// * `context` - A reference to a `RecordProcessingContext` that contains configuration
-///   and state information necessary for processing the records.
-///
-/// # Returns
-/// * `Ok(())` on successful processing of the chunk, which includes filtering and writing
-///   the records.
-/// * `Err(Error)` if an error occurs during processing, such as during
-///   filtering or writing operations.
-///
-/// # Behavior
-/// 1. Filters the input chunk of `StringRecord` using the `filter_records` function,
-///    which returns a `HashMap` where the keys are strings and the values are vectors
-///    of `StringRecord` that meet certain criteria.
-/// 2. Write the filtered records to an output using the `write_records` function.
-/// 3. Returns an `Err` if any step fails, or `Ok(())` if processing completes successfully.
-///
-/// # Dependencies
-/// This function relies on the following:
-/// * `filter_records` - A function that takes a chunk of records and a context and
-///   produces a filtered map of records.
-/// * `write_records` - A function that writes the filtered records to an output
-///   based on the context.
-///
-/// # Errors
-/// This function propagates any errors returned by `write_records` and may raise
-/// errors caused by issues in filtering or writing records.
-///
-/// # Example
-/// ```
-/// let chunk = vec![/* some StringRecord data */];
-/// let context = RecordProcessingContext::new(/* some context configuration */);
-/// match process_chunk(&chunk, &context) {
-///     Ok(()) => println!("Chunk processed successfully."),
-///     Err(e) => eprintln!("Error processing chunk: {}", e),
-/// }
-/// ```
 fn process_chunk(
-    chunk: &Vec<StringRecord>,
+    chunk: &[StringRecord],
     context: &RecordProcessingContext,
-) -> Result<(), Error> {
-    let writers: HashMap<String, Vec<StringRecord>> = filter_records(chunk, context);
-    write_records(writers, context)?;
+) -> Result<(), io::Error> {
+    let filtered_data: HashMap<String, Vec<StringRecord>> = filter_records(chunk, context);
+    write_records(filtered_data, context)?;
     Ok(())
 }
 
 /// Filters and groups record from a chunk based on their category.
-///
 fn filter_records(
-    chunk: &Vec<StringRecord>,
+    chunk: &[StringRecord],
     context: &RecordProcessingContext,
 ) -> HashMap<String, Vec<StringRecord>> {
     chunk
         .par_iter()
         .fold_with(
-            HashMap::new(),
+            // Initial accumulator for each thread,
+            HashMap::new() ,
             |mut acc: HashMap<String, Vec<StringRecord>>, record| {
                 let category: String = get_category(record, context);
-                let filtered_records: StringRecord = context
+                // Create the filtered record by selecting the fields based on the header indexes
+                // StringRecord::from_iter()
+                // clones the &str fields into owned Strings
+                let filtered_records: StringRecord = StringRecord::from_iter(
+                    context
                     .header_indexes
                     .iter()
-                    .filter_map(|&idx| record.get(idx).map(|field| field.to_string()))
-                    .collect();
+                    .filter_map(|&idx| record.get(idx))
+                );
                 acc.entry(category).or_default().push(filtered_records);
                 acc
             },
         )
         .reduce(HashMap::new, |mut acc, map| {
+            // Combine the results from threads efficiently
             for (key, mut value) in map {
+                // Append records for the same category
                 acc.entry(key).or_default().append(&mut value);
             }
             acc
         })
 }
 
-
-/// Writes records to corresponding file outputs, categorized by a given `writer` map.
-fn write_records(
-    writers: HashMap<String, Vec<StringRecord>>,
+// Helper function to get or create a CSV writer for a given category.
+// Manages file creation, header writing, and storing the writer in the context map.
+fn get_or_create_writer<'a>(
+    category: &'a str,
     context: &RecordProcessingContext,
-) -> Result<(), Error> {
-    let mut context_writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
-        context.writers.lock().unwrap();
-    for (category, records) in writers {
-        let writer: &mut Writer<BufWriter<File>> =
-            context_writers.entry(category.clone()).or_insert_with(|| {
-                let file_path: PathBuf = create_category_path(&category, context).unwrap();
-                let file_exists: bool = file_path.exists();
-                let file: File = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&file_path)
-                    .unwrap();
+    writers_map: &'a mut HashMap<String, Writer<BufWriter<File>>>
+) -> Result<&'a mut Writer<BufWriter<File>>, io::Error> {
+    if !writers_map.contains_key(category) {
+        let file_path: PathBuf = create_category_path(category, context)?;
+        let file_exists: bool = file_path.exists();
 
-                let buf_writer: BufWriter<File> = BufWriter::new(file);
-                let mut csv_writer: Writer<BufWriter<File>> = WriterBuilder::new()
-                    .delimiter(context.delimiter)
-                    .from_writer(buf_writer);
+        let file: File = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)?;
 
-                if !file_exists {
-                    csv_writer.write_record(&context.headers).unwrap();
-                }
+        // Use buffered writer
+        let buf_writer: BufWriter<File> = BufWriter::new(file);
+        let mut csv_writer: Writer<BufWriter<File>> = WriterBuilder::new()
+            .delimiter(context.delimiter)
+            .from_writer(buf_writer);
 
-                csv_writer
-            });
-
-        for record in records {
-            writer.write_record(&record)?;
+        // Write headers only if the file is newly created
+        if !file_exists {
+            csv_writer.write_record(&context.headers)?;
         }
+
+        // Insert the newly created writer into the map
+        writers_map.insert(String::from(category), csv_writer);
+    }
+        // Return mutable reference to the writer.
+        Ok(writers_map.get_mut(category).unwrap())
+}
+
+// Writes categorized records to their corresponding CSV files.
+fn write_records(
+    categorized_records: HashMap<String, Vec<StringRecord>>,
+    context: &RecordProcessingContext,
+) -> Result<(), io::Error> {
+    let mut writers_guard: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
+        context.writers.lock().map_err(|_| {
+            io::Error::new(ErrorKind::Other, "Writer mutex was poisoned")
+        })?;
+
+    for (category, records) in categorized_records {
+        let writer = get_or_create_writer(&category, context, &mut writers_guard)?;
+
+       records.into_iter().for_each(|record| {
+           writer.write_record(&record).unwrap();
+       }
+       );
         writer.flush()?;
     }
     Ok(())
@@ -159,17 +138,17 @@ fn write_records(
 /// Retrieves the category value from a given `StringRecord` based on the provided processing context.
 #[inline]
 fn get_category(record: &StringRecord, context: &RecordProcessingContext) -> String {
-    match record.get(context.split_column_idx) {
-        Some(category) => category.to_string(),
-        _ => String::from("unknown"),
-    }
+    record
+        .get(context.split_column_idx)
+        .map_or_else(|| String::from("unknown"), String::from)
 }
 
-/// Extracts headers from a given `StringRecord`, excluding the field in a specified column.
+// Extracts specific headers from a 'StringRecord', excluding one column.
 pub fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> StringRecord {
     let headers: Vec<String> = current_headers
         .iter()
         .enumerate()
+        // Filter out the split column index
         .filter_map(|(idx, field)| {
             if idx != split_column_id {
                 Some(field.to_string())
@@ -181,30 +160,47 @@ pub fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> St
     StringRecord::from(headers)
 }
 
-/// Retrieves the indexes of specified headers within a set of file headers.
-pub fn get_header_indexes(headers: &StringRecord, file_headers: &StringRecord) -> Vec<usize> {
-    file_headers
+/// Finds the original indexes of selected headers within the full file headers
+pub fn get_header_indexes(headers_to_keep: &StringRecord, all_file_headers: &StringRecord) -> Vec<usize> {
+    all_file_headers
         .iter()
-        .filter_map(|header| headers.iter().position(|h| h == header))
+        .enumerate()
+        // find the index for each header we want to keep
+        .filter_map(|(idx, file_header)| {
+            if headers_to_keep.iter().any(
+                |h| h == file_header
+            ) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
-/// Creates a file path for a category, ensuring proper directory structure and input validation.
+/// Creates a file path for a category, ensuring the directory exists if requested.
+/// Returns and error of invalid category names
 fn create_category_path(
     category: &str,
     context: &RecordProcessingContext,
-) -> Result<PathBuf, Error> {
-    if category.contains("..") || category.contains('/') || category.contains("\\") {
-        panic!("Invalid category name: {}", category);
+) -> Result<PathBuf, io::Error> {
+    if category.is_empty() || category.contains([
+        '/', '\\', ':', '*', '?', '"', '<', '>', '|'
+    ]) || category == "." || category == ".." {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("Invalid category name: '{}'", category),
+        ));
     }
+
     let file_path: PathBuf = if context.create_directory {
-        let dir: PathBuf = context.output_dir.join(category);
-        if !dir.exists() {
-            fs::create_dir_all(&dir)?;
-        }
-        dir.join(format!("{}.csv", context.file_name))
+        let dir_path: PathBuf = context.output_dir.join(category);
+        fs::create_dir_all(&dir_path)?;
+        // Construct the final file path within the category directory
+        dir_path.join(format!("{}.csv", context.file_name))
     } else {
-        context.output_dir.join(format!("{}.csv", category))
+        // Construct the file path directly in the output directory
+        context.output_dir.join(format!("{}_{}.csv", context.file_name, category))
     };
     Ok(file_path)
 }

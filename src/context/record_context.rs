@@ -15,4 +15,5 @@ pub struct RecordProcessingContext<'a> {
     pub split_column_idx: usize,
     pub writers: Arc<Mutex<HashMap<String, csv::Writer<BufWriter<File>>>>>,
     pub header_indexes: Vec<usize>,
+    pub chunk_size: &'a usize,
 }

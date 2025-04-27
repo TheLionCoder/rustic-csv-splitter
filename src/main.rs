@@ -30,6 +30,7 @@ fn main() {
     let delimiter: &Delimiter = matches.get_one::<Delimiter>("delimiter").unwrap();
     let input_column: &str = matches.get_one::<String>("input-column").unwrap();
     let output_dir: &PathBuf = matches.get_one::<PathBuf>("output-dir").unwrap();
+    let chunk_size: &usize =  matches.get_one::<usize>("chunk-size").unwrap();
     let create_dir: bool = matches.get_flag("create-dir");
 
     paths.for_each(|path| {
@@ -71,6 +72,7 @@ fn main() {
             split_column_idx,
             writers: category_writers.clone(),
             header_indexes,
+            chunk_size
         });
 
         event!(Level::INFO, "Writing records to CSV...");

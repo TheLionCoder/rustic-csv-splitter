@@ -41,27 +41,65 @@ cargo target/release/rustic-csv-splitter
 - `-d, --delimiter <delimiter> Delimiter used in the CSV file [default: ,]`
 - `-c, --column <input-column> Column to split the CSV file by`
 - `-o, --dir <output-dir> Output directory to save the split files`
-- `-r, --create-dir Save the split files in a directory with the name
-of the column value`
+- `-r, --create-dir Save the split files in a directory with the name`
+- `-s, --chunk-size <chunk-size>  Number of records to read from the column value
+CSV file before writing to a new file [default: 100000]`
 
-## Example
+## Example 1
 
-To split a csv file, without create directories for each column value
+To split a couple of CSV files, without create directories for each column value
 
 ```sh
-cargo target/release/rustic-csv-splitter \
-    -p assets/city.csv assets/other_datase.csv \
-    -c "State" -o assets/tmp/
+target/release/rustic-csv-splitter \n
+-p assets/worldcitiespop.csv assets/city.csv assets/new_city.csv \n
+-c State\n
+-o assets/tmp
 ```
 
 _The result will be like:_
 
 ```sh
-assets/
-├── city.csv
-├── data
-│   ├── AK.csv
-│   ├── AL.csv
-│   ├── CA.csv
-│   └── NY.csv
+assets/tmp
+├── city_AK.csv
+├── city_AL.csv
+├── city_CA.csv
+├── city_NY.csv
+├── new_city_AK.csv
+├── new_city_AL.csv
+├── new_city_CA.csv
+└── new_city_NY.csv
+
+1 directory, 8 files
+```
+
+## Example 2
+
+To split a couple of CSV files, creating directories for each column value
+
+```sh
+target/release/rustic-csv-splitter \n
+-p assets/worldcitiespop.csv assets/city.csv assets/new_city.csv \n
+-c State \n
+-r
+-o assets/tmp
+```
+
+The result will be like:
+
+```sh
+assets/tmp
+├── AK
+│   ├── city.csv
+│   └── new_city.csv
+├── AL
+│   ├── city.csv
+│   └── new_city.csv
+├── CA
+│   ├── city.csv
+│   └── new_city.csv
+└── NY
+    ├── city.csv
+    └── new_city.csv
+
+5 directories, 8 files
 ```
