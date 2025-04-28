@@ -15,14 +15,13 @@ pub fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
 ) -> Result<(), io::Error> {
-
-    let mut chunk: Vec<_> = Vec::with_capacity(*context.chunk_size);
+    let mut chunk: Vec<_> = Vec::with_capacity(*context.file_context.chunk_size);
 
     for result in reader.records() {
         let record: StringRecord = result?;
         chunk.push(record);
 
-        if chunk.len() >= *context.chunk_size {
+        if chunk.len() >= *context.file_context.chunk_size {
             process_chunk(&chunk, context)?;
             chunk.clear()
         }
@@ -53,7 +52,7 @@ fn filter_records(
         .par_iter()
         .fold_with(
             // Initial accumulator for each thread,
-            HashMap::new() ,
+            HashMap::new(),
             |mut acc: HashMap<String, Vec<StringRecord>>, record| {
                 let category: String = get_category(record, context);
                 // Create the filtered record by selecting the fields based on the header indexes
@@ -61,9 +60,9 @@ fn filter_records(
                 // clones the &str fields into owned Strings
                 let filtered_records: StringRecord = StringRecord::from_iter(
                     context
-                    .header_indexes
-                    .iter()
-                    .filter_map(|&idx| record.get(idx))
+                        .header_indexes
+                        .iter()
+                        .filter_map(|&idx| record.get(idx)),
                 );
                 acc.entry(category).or_default().push(filtered_records);
                 acc
@@ -84,7 +83,7 @@ fn filter_records(
 fn get_or_create_writer<'a>(
     category: &'a str,
     context: &RecordProcessingContext,
-    writers_map: &'a mut HashMap<String, Writer<BufWriter<File>>>
+    writers_map: &'a mut HashMap<String, Writer<BufWriter<File>>>,
 ) -> Result<&'a mut Writer<BufWriter<File>>, io::Error> {
     if !writers_map.contains_key(category) {
         let file_path: PathBuf = create_category_path(category, context)?;
@@ -98,19 +97,19 @@ fn get_or_create_writer<'a>(
         // Use buffered writer
         let buf_writer: BufWriter<File> = BufWriter::new(file);
         let mut csv_writer: Writer<BufWriter<File>> = WriterBuilder::new()
-            .delimiter(context.delimiter)
+            .delimiter(context.file_context.output_delimiter)
             .from_writer(buf_writer);
 
         // Write headers only if the file is newly created
         if !file_exists {
-            csv_writer.write_record(&context.headers)?;
+            csv_writer.write_record(&context.file_headers)?;
         }
 
         // Insert the newly created writer into the map
         writers_map.insert(String::from(category), csv_writer);
     }
-        // Return mutable reference to the writer.
-        Ok(writers_map.get_mut(category).unwrap())
+    // Return mutable reference to the writer.
+    Ok(writers_map.get_mut(category).unwrap())
 }
 
 // Writes categorized records to their corresponding CSV files.
@@ -118,18 +117,17 @@ fn write_records(
     categorized_records: HashMap<String, Vec<StringRecord>>,
     context: &RecordProcessingContext,
 ) -> Result<(), io::Error> {
-    let mut writers_guard: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
-        context.writers.lock().map_err(|_| {
-            io::Error::new(ErrorKind::Other, "Writer mutex was poisoned")
-        })?;
+    let mut writers_guard: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> = context
+        .category_writers
+        .lock()
+        .map_err(|_| io::Error::new(ErrorKind::Other, "Writer mutex was poisoned"))?;
 
     for (category, records) in categorized_records {
         let writer = get_or_create_writer(&category, context, &mut writers_guard)?;
 
-       records.into_iter().for_each(|record| {
-           writer.write_record(&record).unwrap();
-       }
-       );
+        records.into_iter().for_each(|record| {
+            writer.write_record(&record).unwrap();
+        });
         writer.flush()?;
     }
     Ok(())
@@ -161,15 +159,16 @@ pub fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> St
 }
 
 /// Finds the original indexes of selected headers within the full file headers
-pub fn get_header_indexes(headers_to_keep: &StringRecord, all_file_headers: &StringRecord) -> Vec<usize> {
+pub fn get_header_indexes(
+    headers_to_keep: &StringRecord,
+    all_file_headers: &StringRecord,
+) -> Vec<usize> {
     all_file_headers
         .iter()
         .enumerate()
         // find the index for each header we want to keep
         .filter_map(|(idx, file_header)| {
-            if headers_to_keep.iter().any(
-                |h| h == file_header
-            ) {
+            if headers_to_keep.iter().any(|h| h == file_header) {
                 Some(idx)
             } else {
                 None
@@ -184,23 +183,28 @@ fn create_category_path(
     category: &str,
     context: &RecordProcessingContext,
 ) -> Result<PathBuf, io::Error> {
-    if category.is_empty() || category.contains([
-        '/', '\\', ':', '*', '?', '"', '<', '>', '|'
-    ]) || category == "." || category == ".." {
+    if category.is_empty()
+        || category.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+        || category == "."
+        || category == ".."
+    {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
             format!("Invalid category name: '{}'", category),
         ));
     }
 
-    let file_path: PathBuf = if context.create_directory {
-        let dir_path: PathBuf = context.output_dir.join(category);
+    let file_path: PathBuf = if context.file_context.create_directory {
+        let dir_path: PathBuf = context.file_context.output_dir.join(category);
         fs::create_dir_all(&dir_path)?;
         // Construct the final file path within the category directory
-        dir_path.join(format!("{}.csv", context.file_name))
+        dir_path.join(format!("{}.csv", context.file_context.file_name))
     } else {
         // Construct the file path directly in the output directory
-        context.output_dir.join(format!("{}_{}.csv", context.file_name, category))
+        context.file_context.output_dir.join(format!(
+            "{}_{}.csv",
+            context.file_context.file_name, category
+        ))
     };
     Ok(file_path)
 }
