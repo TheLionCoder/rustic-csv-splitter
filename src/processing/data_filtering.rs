@@ -9,8 +9,38 @@ use std::sync::MutexGuard;
 
 use rayon::prelude::*;
 
-/// Writes records from a CSV reader to a processing pipeline in chunks,
-/// improving memory usage for large datasets.
+/// Reads records from a CSV reader and processes them in chunks.
+///
+/// # Arguments
+///
+/// * `reader` - A mutable reference to a `csv::Reader<File>` to read records from.
+/// * `context` - A reference to a `RecordProcessingContext` containing configuration
+///   (like `chunk_size`) and potentially other details needed for processing.
+///
+/// # Errors
+///
+/// Returns an `io::Error` if:
+/// - An error occurs while reading from the CSV (`csv::Error` is mapped to `io::Error`).
+/// - An error occurs during chunk processing via `process_chunk`.
+///
+/// # Example
+///
+/// ```rust
+/// use csv::Reader;
+/// use std::fs::File;
+/// use std::io;
+/// let path = std::path::Path::new("./foo/bar.csv");
+/// let reader = ReaderBuilder::new()
+///    .buffer_capacity(16 * 1024 * 1024)
+///    .has_headers(true)
+///    .delimiter(delimiter.clone().into())
+///    .from_path(path)?;
+///let context = RecordProcessingContext {
+///         file_context: FileContext {
+///             chunk_size: 1000 // Process 1000 records at a time
+///         },
+///data_filtering::write_records_to_csv(&mut reader, &context).unwrap()
+/// ```
 pub fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
@@ -33,7 +63,28 @@ pub fn write_records_to_csv(
     Ok(())
 }
 
-/// Processes a chunk of `StringRecord` data by filtering and writing the records
+/// Processes a chunk of `StringRecord` data. This function filters the input records
+/// based on a provided context and writes the filtered results to storage.
+///
+/// # Arguments
+///
+/// * `chunk` - A slice of `StringRecord` objects representing the chunk of data to be processed.
+/// * `context` - A reference to a `RecordProcessingContext` object, which provides
+///   the configuration and context needed for filtering and writing operations.
+///
+/// # Returns
+///
+/// * `Ok(())` - If all records are successfully processed and written.
+/// * `Err(io::Error)` - If there is an error during the filtering or writing process.
+///
+///
+/// # Examples
+///
+/// ```rust
+/// let chunk: Vec<StringRecord> = vec![/* some records */];
+/// let context = RecordProcessingContext::new(/* configuration */);
+/// process_chunk(&chunk, &context).unwrap();
+/// ```
 fn process_chunk(
     chunk: &[StringRecord],
     context: &RecordProcessingContext,
@@ -43,7 +94,42 @@ fn process_chunk(
     Ok(())
 }
 
-/// Filters and groups record from a chunk based on their category.
+/// Filters and categorizes records in a chunk based on specific processing context.
+///
+/// The function takes a slice of `StringRecord` and processes it in parallel using Rayon.
+/// Each record is categorized into different buckets based on a derived category,
+/// and certain fields of the records are selected and stored as filtered records.
+///
+/// # Parameters
+///
+/// - `chunk`: A slice of `StringRecord`. Each `StringRecord` represents a row of data.
+/// - `context`: A reference to a `RecordProcessingContext` that provides additional
+///   processing metadata, like header indexes for filtering fields.
+///
+/// # Returns
+///
+/// - `HashMap<String, Vec<StringRecord>>`: A mapping where the key is the category
+///   (as derived by the `get_category` function) and the value is a vector of filtered
+///   `StringRecord` objects associated with that category.
+///
+/// # Example
+///
+/// ```rust
+/// use std::collections::HashMap;
+/// use csv::StringRecord;
+///
+/// let chunk: Vec<StringRecord> = vec![/* Your records here */];
+/// let context: RecordProcessingContext = /* Your context setup here */;
+///
+/// let filtered_result = filter_records(&chunk, &context);
+///
+/// for (category, records) in filtered_result {
+///     println!("Category: {}", category);
+///     for record in records {
+///         println!("{:?}", record);
+///     }
+/// }
+/// ```
 fn filter_records(
     chunk: &[StringRecord],
     context: &RecordProcessingContext,
@@ -78,8 +164,49 @@ fn filter_records(
         })
 }
 
-// Helper function to get or create a CSV writer for a given category.
-// Manages file creation, header writing, and storing the writer in the context map.
+/// This function manages the creation or retrieval of a CSV writer for a specific category,
+/// ensuring proper file handling with buffered writing. It uses a context map (`writers_map`)
+/// to store and reuse writers, avoiding redundant file operations for the same category.
+///
+/// # Arguments
+///
+/// * `category` - A string slice representing the category of the file. This string is used
+///   to differentiate between different output files.
+/// * `context` - A reference to the `RecordProcessingContext` which provides information
+///   required for file handling, such as headers and file delimiter settings.
+/// * `writers_map` - A mutable reference to a `HashMap` which maps category names to their
+///   respective `Writer<BufWriter<File>>` instances used for writing CSV records.
+///
+/// # Returns
+///
+/// Returns a mutable reference to the corresponding `Writer<BufWriter<File>>` for the given
+/// category. The writer is used to write CSV data to the respective category's file.
+///
+/// # Errors
+///
+/// * Returns an `io::Error` if there are issues during file creation, opening, or writing
+///   operations.
+/// * Propagates errors from the helper function `create_category_path` if the file path
+///   resolution fails.
+///
+/// # Example
+///
+/// ```rust
+/// use std::collections::HashMap;
+/// use std::fs::File;
+/// use std::io::{self, BufWriter};
+///
+/// fn example_usage() -> Result<(), io::Error> {
+///     let mut writers_map: HashMap<String, Writer<BufWriter<File>>> = HashMap::new();
+///     let context: RecordProcessingContext = RecordProcessingContext::new();
+///     let category = "category1";
+///
+///     let writer = get_or_create_writer(category, &context, &mut writers_map)?;
+///     
+///     Ok(())
+/// }
+/// ```
+///
 fn get_or_create_writer<'a>(
     category: &'a str,
     context: &RecordProcessingContext,
@@ -112,7 +239,31 @@ fn get_or_create_writer<'a>(
     Ok(writers_map.get_mut(category).unwrap())
 }
 
-// Writes categorized records to their corresponding CSV files.
+/// Writes categorized records to their respective destinations using shared writers.
+///
+/// # Arguments
+///
+/// * `categorized_records` - A `HashMap` where keys are category names (`String`) and
+///   values are `Vec<StringRecord>` containing the records belonging to that category.
+///   This function takes ownership of the map and its contents.
+/// * `context` - A reference to `RecordProcessingContext` which must contain `category_writers`:
+///   a `Mutex`-protected `HashMap` storing the actual `Writer` instances for each category.
+///   This allows multiple threads to potentially call `write_records` safely.
+///
+/// # Errors
+///
+/// Returns `io::Error` if:
+/// * The `category_writers` mutex is poisoned (i.e., another thread panicked while holding the lock).
+/// * `get_or_create_writer` fails (e.g., cannot create a new file, invalid path, permissions error).
+/// * `writer.flush()` fails (e.g., disk full, I/O error).
+///
+/// # Panics
+///
+/// **This function will panic** if `writer.write_record(&record)` returns an error.
+/// This typically happens due to I/O issues (e.g., disk full, broken pipe, permission denied).
+/// Using `.unwrap()` here assumes writes will never fail, which is unsafe for I/O operations.
+/// Consider handling the `Result` returned by `write_record` explicitly for robust error handling.
+/// It's like assuming the mail bag *cannot* catch fire during loading – better be prepared! categorized records to their corresponding CSV files.
 fn write_records(
     categorized_records: HashMap<String, Vec<StringRecord>>,
     context: &RecordProcessingContext,
@@ -133,7 +284,6 @@ fn write_records(
     Ok(())
 }
 
-/// Retrieves the category value from a given `StringRecord` based on the provided processing context.
 #[inline]
 fn get_category(record: &StringRecord, context: &RecordProcessingContext) -> String {
     record
