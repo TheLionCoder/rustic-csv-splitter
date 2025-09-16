@@ -10,3 +10,8 @@ rayon = "1.10.0"
 thiserror = "2.0.12"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+anyhow = "1.0"
+dashmap = "5.5"
+tokio = { version = "1.0", features = ["full"] }
+csv-async = "1.2"
+futures = "0.3"
