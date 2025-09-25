@@ -1,4 +1,5 @@
 use crate::context::Delimiter;
+use anyhow::{anyhow, Result};
 use csv::{Reader, ReaderBuilder};
 use std::fs::File;
 use std::path::Path;
@@ -44,9 +45,13 @@ use std::string::String;
 ///     }
 /// }
 /// ```
-pub fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<File>, csv::Error> {
+pub fn read_file(
+    path: &Path,
+    delimiter: &Delimiter,
+    buffer_size: usize,
+) -> Result<Reader<File>, csv::Error> {
     let reader: Reader<File> = ReaderBuilder::new()
-        .buffer_capacity(16 * 1024 * 1024)
+        .buffer_capacity(buffer_size)
         .has_headers(true)
         .delimiter(delimiter.clone().into())
         .from_path(path)?;
@@ -94,7 +99,12 @@ pub fn read_file(path: &Path, delimiter: &Delimiter) -> Result<Reader<File>, csv
 ///
 /// Proper error handling should be implemented to avoid potential panics caused by any invalid input
 /// or unexpected conditions.
-pub fn extract_file_name(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    let file_stem: &str = path.file_stem().unwrap().to_str().unwrap();
+pub fn extract_file_name(path: &Path) -> Result<String> {
+    let file_stem = path
+        .file_stem()
+        .ok_or_else(|| anyhow!("Invalid file path: no file stem"))?
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid file name: not valid UTF-8"))?;
+
     Ok(file_stem.to_string())
 }

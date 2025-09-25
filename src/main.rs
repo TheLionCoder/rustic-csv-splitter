@@ -14,7 +14,8 @@ use crate::context::FileContext;
 use crate::processing::data_filtering;
 use crate::processing::data_loading::{extract_file_name, read_file};
 
-mod cli_parsing;
+mod app_error;
+mod cli;
 mod context;
 mod processing;
 

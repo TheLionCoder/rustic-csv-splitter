@@ -1,12 +1,17 @@
+use clap::ValueEnum;
 use std::fmt;
 use std::str::FromStr;
 use thiserror::Error;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delimiter {
+    #[clap(name = ",")]
     Comma,
+    #[clap(name = "|")]
     Pipe,
+    #[clap(name = "\t")]
     Tab,
+    #[clap(name = ";")]
     SemiColon,
 }
 

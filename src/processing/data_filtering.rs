@@ -1,13 +1,17 @@
+use crate::app_error;
 use crate::context::RecordProcessingContext;
+use anyhow::Result;
 use csv::{Reader, StringRecord, Writer, WriterBuilder};
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, ErrorKind};
 use std::path::PathBuf;
 use std::string::String;
-use std::sync::MutexGuard;
 
 use rayon::prelude::*;
+
+type WriteGuard<'a> = dashmap::mapref::one::RefMut<'a, String, Writer<BufWriter<File>>>;
 
 /// Reads records from a CSV reader and processes them in chunks.
 ///
@@ -44,14 +48,14 @@ use rayon::prelude::*;
 pub fn write_records_to_csv(
     reader: &mut Reader<File>,
     context: &RecordProcessingContext,
-) -> Result<(), io::Error> {
-    let mut chunk: Vec<_> = Vec::with_capacity(*context.file_context.chunk_size);
+) -> Result<()> {
+    let mut chunk: Vec<_> = Vec::with_capacity(context.file_context.chunk_size);
 
     for result in reader.records() {
         let record: StringRecord = result?;
         chunk.push(record);
 
-        if chunk.len() >= *context.file_context.chunk_size {
+        if chunk.len() >= context.file_context.chunk_size {
             process_chunk(&chunk, context)?;
             chunk.clear()
         }
@@ -85,10 +89,7 @@ pub fn write_records_to_csv(
 /// let context = RecordProcessingContext::new(/* configuration */);
 /// process_chunk(&chunk, &context).unwrap();
 /// ```
-fn process_chunk(
-    chunk: &[StringRecord],
-    context: &RecordProcessingContext,
-) -> Result<(), io::Error> {
+fn process_chunk(chunk: &[StringRecord], context: &RecordProcessingContext) -> Result<()> {
     let filtered_data: HashMap<String, Vec<StringRecord>> = filter_records(chunk, context);
     write_records(filtered_data, context)?;
     Ok(())
@@ -208,11 +209,12 @@ fn filter_records(
 /// ```
 ///
 fn get_or_create_writer<'a>(
-    category: &'a str,
+    category: &str,
     context: &RecordProcessingContext,
-    writers_map: &'a mut HashMap<String, Writer<BufWriter<File>>>,
-) -> Result<&'a mut Writer<BufWriter<File>>, io::Error> {
-    if !writers_map.contains_key(category) {
+    writers_map: &'a DashMap<String, Writer<BufWriter<File>>>,
+) -> Result<WriteGuard<'a>, app_error::WriterError> {
+    let entry = writers_map.entry(category.to_string());
+    entry.or_try_insert_with(|| {
         let file_path: PathBuf = create_category_path(category, context)?;
         let file_exists: bool = file_path.exists();
 
@@ -231,12 +233,8 @@ fn get_or_create_writer<'a>(
         if !file_exists {
             csv_writer.write_record(&context.file_headers)?;
         }
-
-        // Insert the newly created writer into the map
-        writers_map.insert(String::from(category), csv_writer);
-    }
-    // Return mutable reference to the writer.
-    Ok(writers_map.get_mut(category).unwrap())
+        Ok(csv_writer)
+    })
 }
 
 /// Writes categorized records to their respective destinations using shared writers.
@@ -267,19 +265,20 @@ fn get_or_create_writer<'a>(
 fn write_records(
     categorized_records: HashMap<String, Vec<StringRecord>>,
     context: &RecordProcessingContext,
-) -> Result<(), io::Error> {
-    let mut writers_guard: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> = context
-        .category_writers
-        .lock()
-        .map_err(|_| io::Error::new(ErrorKind::Other, "Writer mutex was poisoned"))?;
-
+) -> Result<()> {
     for (category, records) in categorized_records {
-        let writer = get_or_create_writer(&category, context, &mut writers_guard)?;
+        let writers_map_guard = context
+            .category_writers
+            .lock()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Mutex lock failed: {e}")))?;
 
-        records.into_iter().for_each(|record| {
-            writer.write_record(&record).unwrap();
-        });
-        writer.flush()?;
+        let mut writer_ref = get_or_create_writer(&category, context, &*writers_map_guard)?;
+
+        for record in records {
+            writer_ref.value_mut().write_record(&record)?;
+        }
+
+        writer_ref.value_mut().flush()?;
     }
     Ok(())
 }
