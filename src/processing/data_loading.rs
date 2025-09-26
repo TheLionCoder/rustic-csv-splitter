@@ -1,5 +1,5 @@
 use crate::context::Delimiter;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use csv::{Reader, ReaderBuilder};
 use std::fs::File;
 use std::path::Path;
@@ -45,16 +45,13 @@ use std::string::String;
 ///     }
 /// }
 /// ```
-pub fn read_file(
-    path: &Path,
-    delimiter: &Delimiter,
-    buffer_size: usize,
-) -> Result<Reader<File>, csv::Error> {
+pub fn read_file(path: &Path, delimiter: &Delimiter, buffer_size: usize) -> Result<Reader<File>> {
     let reader: Reader<File> = ReaderBuilder::new()
         .buffer_capacity(buffer_size)
         .has_headers(true)
-        .delimiter(delimiter.clone().into())
-        .from_path(path)?;
+        .delimiter((*delimiter).into())
+        .from_path(path)
+        .with_context(|| format!("Failed to create a CSV reader for path: {}", path.display()))?;
 
     Ok(reader)
 }

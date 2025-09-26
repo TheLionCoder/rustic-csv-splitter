@@ -1,93 +1,33 @@
-use clap::parser::ValuesRef;
-use clap::ArgMatches;
-use csv::{Reader, StringRecord, Writer};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::BufWriter;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
-use tracing::{error, event, span, Level, Span};
-
-use crate::context::record_context::RecordProcessingContext;
-use crate::context::Delimiter;
-use crate::context::FileContext;
-use crate::processing::data_filtering;
-use crate::processing::data_loading::{extract_file_name, read_file};
+use anyhow::{bail, Result} ;
+use clap::Parser;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 mod app_error;
 mod cli;
 mod context;
 mod processing;
 
-fn main() {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let span: Span = span!(Level::INFO, "Splitting file...");
+    let span = tracing::span!(tracing::Level::INFO, "Splitting file...");
     let _guard = span.enter();
 
-    let matches: ArgMatches = cli_parsing::parse_cli();
-    let paths: ValuesRef<PathBuf> = matches.get_many::<PathBuf>("path").unwrap_or_else(|| {
-        error!("No valid paths provided. Exiting...");
-        std::process::exit(1)
-    });
-    let delimiter: &Delimiter = matches.get_one::<Delimiter>("delimiter").unwrap();
-    let input_column: &str = matches.get_one::<String>("input-column").unwrap();
-    let output_dir: &PathBuf = matches.get_one::<PathBuf>("output-dir").unwrap();
-    let chunk_size: &usize = matches.get_one::<usize>("chunk-size").unwrap();
-    let create_directory: bool = matches.get_flag("create-dir");
+    let config = cli::AppConfig::parse();
 
-    paths.for_each(|path| {
-        event!(Level::INFO, "Reading file: {:?}", path);
-        let mut reader: Reader<File> = match read_file(path, delimiter) {
-            Ok(reader) => reader,
-            Err(err) => {
-                error!("Error reading file: {:?}: {}. Skipping...\n", path, err);
-                return;
-            }
-        };
-        let file_name: String = extract_file_name(path).unwrap();
-        let file_context: FileContext<'_> = FileContext {
-            output_dir,
-            create_directory,
-            file_name,
-            output_delimiter: Delimiter::PIPE,
-            chunk_size,
-        };
+    if config.paths.is_empty() {
+        bail!("No input paths provided.");
+    }
+    tracing::info!(
+        input_files = config.paths.len(),
+        output_dir = %config.output_dir.display(),
+        "Configuration loaded, started parallel file processing."
+    );
 
-        let headers: StringRecord = reader.headers().unwrap().clone();
+    config
+    .paths
+    .par_iter()
+    .try_for_each(|path| processing::process_file::process_file(path, &config))?;
 
-        let category_writers: Arc<Mutex<HashMap<String, Writer<BufWriter<File>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        // Get the index of the column to split by
-
-        let split_column_idx: usize = match headers.iter().position(|h| h == input_column) {
-            Some(idx) => idx,
-            None => {
-                error!(
-                    "Column '{}' not found in file headers. Skipping...\n",
-                    input_column
-                );
-                return;
-            }
-        };
-        let file_headers: StringRecord = data_filtering::get_headers(&headers, split_column_idx);
-        let header_indexes: Vec<usize> =
-            data_filtering::get_header_indexes(&headers, &file_headers);
-
-        let context: Arc<RecordProcessingContext> = Arc::new(RecordProcessingContext {
-            file_headers,
-            split_column_idx,
-            category_writers: category_writers.clone(),
-            header_indexes,
-            file_context,
-        });
-
-        event!(Level::INFO, "Writing records to CSV...");
-        data_filtering::write_records_to_csv(&mut reader, &context).unwrap();
-        let mut writers: MutexGuard<HashMap<String, Writer<BufWriter<File>>>> =
-            category_writers.lock().unwrap();
-        for writer in writers.values_mut() {
-            writer.flush().unwrap();
-        }
-        event!(Level::INFO, "Finished writing records to CSV...\n");
-    })
+    tracing::info!("All files processed successfully.");
+    Ok(())
 }

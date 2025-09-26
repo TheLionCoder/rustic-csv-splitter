@@ -2,7 +2,6 @@ use crate::app_error;
 use crate::context::RecordProcessingContext;
 use anyhow::Result;
 use csv::{Reader, StringRecord, Writer, WriterBuilder};
-use dashmap::DashMap;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, ErrorKind};
@@ -12,6 +11,53 @@ use std::string::String;
 use rayon::prelude::*;
 
 type WriteGuard<'a> = dashmap::mapref::one::RefMut<'a, String, Writer<BufWriter<File>>>;
+
+/// Prepares the headers for the output files and identifies the column indexes to keep.
+///
+/// This function takes the complete set of headers from the original CSV file and removes
+/// the column that is being used to split the data. It returns both the new, filtered
+/// header record and a vector containing the original indexes of the columns that were retained.
+/// This index vector is crucial for efficiently selecting the correct data fields from each record later on.
+///
+/// # Arguments
+///
+/// * `original_headers` - A `&StringRecord` containing all headers from the input file.
+/// * `split_column_idx` - The zero-based index of the column to remove (the column used for categorization).
+///
+/// # Returns
+///
+/// A tuple containing:
+/// * `StringRecord`: The new set of headers, excluding the split column.
+/// * `Vec<usize>`: A vector of the original column indexes that are being kept.
+///
+/// # Example
+///
+/// ```rust
+/// use csv::StringRecord;
+/// // Assume prepare_header_info is available in the current scope
+///
+/// let original = StringRecord::from(vec!["id", "city", "state", "zip"]);
+/// let split_idx = 2; // We are splitting by "state"
+///
+/// let (new_headers, kept_indexes) = prepare_header_info(&original, split_idx);
+///
+/// assert_eq!(new_headers, StringRecord::from(vec!["id", "city", "zip"]));
+/// assert_eq!(kept_indexes, vec![0, 1, 3]);
+pub fn prepare_header_info(
+    original_headers: &StringRecord,
+    split_column_idx: usize,
+) -> (StringRecord, Vec<usize>) {
+    let mut headers_to_keep = Vec::with_capacity(original_headers.len() - 1);
+    let mut indexes_to_keep = Vec::with_capacity(original_headers.len() - 1);
+
+    for (idx, header) in original_headers.iter().enumerate() {
+        if idx != split_column_idx {
+            headers_to_keep.push(header);
+            indexes_to_keep.push(idx);
+        }
+    }
+    (StringRecord::from_iter(headers_to_keep), indexes_to_keep)
+}
 
 /// Reads records from a CSV reader and processes them in chunks.
 ///
@@ -90,8 +136,9 @@ pub fn write_records_to_csv(
 /// process_chunk(&chunk, &context).unwrap();
 /// ```
 fn process_chunk(chunk: &[StringRecord], context: &RecordProcessingContext) -> Result<()> {
-    let filtered_data: HashMap<String, Vec<StringRecord>> = filter_records(chunk, context);
-    write_records(filtered_data, context)?;
+    let categorized_data: HashMap<String, Vec<StringRecord>> =
+        filter_records_by_category(chunk, context);
+    write_categorized_records(categorized_data, context)?;
     Ok(())
 }
 
@@ -131,7 +178,7 @@ fn process_chunk(chunk: &[StringRecord], context: &RecordProcessingContext) -> R
 ///     }
 /// }
 /// ```
-fn filter_records(
+fn filter_records_by_category(
     chunk: &[StringRecord],
     context: &RecordProcessingContext,
 ) -> HashMap<String, Vec<StringRecord>> {
@@ -145,23 +192,61 @@ fn filter_records(
                 // Create the filtered record by selecting the fields based on the header indexes
                 // StringRecord::from_iter()
                 // clones the &str fields into owned Strings
-                let filtered_records: StringRecord = StringRecord::from_iter(
-                    context
-                        .header_indexes
-                        .iter()
-                        .filter_map(|&idx| record.get(idx)),
-                );
+                let filtered_records: StringRecord =
+                    StringRecord::from_iter(context.header_indexes.iter().map(|&idx| &record[idx]));
                 acc.entry(category).or_default().push(filtered_records);
                 acc
             },
         )
-        .reduce(HashMap::new, |mut acc, map| {
+        .reduce(HashMap::new, |mut main_map, thread_map| {
             // Combine the results from threads efficiently
-            for (key, mut value) in map {
+            for (key, mut records) in thread_map {
                 // Append records for the same category
-                acc.entry(key).or_default().append(&mut value);
+                main_map.entry(key).or_default().append(&mut records);
             }
-            acc
+            main_map
+        })
+}
+
+/// Writes categorized records to their respective destinations using shared writers.
+///
+/// # Arguments
+///
+/// * `categorized_records` - A `HashMap` where keys are category names (`String`) and
+///   values are `Vec<StringRecord>` containing the records belonging to that category.
+///   This function takes ownership of the map and its contents.
+/// * `context` - A reference to `RecordProcessingContext` which must contain `category_writers`:
+///   a `Mutex`-protected `HashMap` storing the actual `Writer` instances for each category.
+///   This allows multiple threads to potentially call `write_records` safely.
+///
+/// # Errors
+///
+/// Returns `io::Error` if:
+/// * The `category_writers` mutex is poisoned (i.e., another thread panicked while holding the lock).
+/// * `get_or_create_writer` fails (e.g., cannot create a new file, invalid path, permissions error).
+/// * `writer.flush()` fails (e.g., disk full, I/O error).
+///
+/// # Panics
+///
+/// **This function will panic** if `writer.write_record(&record)` returns an error.
+/// This typically happens due to I/O issues (e.g., disk full, broken pipe, permission denied).
+/// Using `.unwrap()` here assumes writes will never fail, which is unsafe for I/O operations.
+/// Consider handling the `Result` returned by `write_record` explicitly for robust error handling.
+/// It's like assuming the mail bag *cannot* catch fire during loading – better be prepared! categorized records to their corresponding CSV files.
+fn write_categorized_records(
+    categorized_records: HashMap<String, Vec<StringRecord>>,
+    context: &RecordProcessingContext,
+) -> Result<()> {
+    categorized_records
+        .into_par_iter()
+        .try_for_each(|(category, records)| -> Result<()> {
+            let mut writer_guard = get_or_create_writer(&category, context)?;
+
+            for record in records {
+                writer_guard.write_record(&record)?;
+            }
+            writer_guard.flush()?;
+            Ok(())
         })
 }
 
@@ -210,10 +295,9 @@ fn filter_records(
 ///
 fn get_or_create_writer<'a>(
     category: &str,
-    context: &RecordProcessingContext,
-    writers_map: &'a DashMap<String, Writer<BufWriter<File>>>,
+    context: &'a RecordProcessingContext,
 ) -> Result<WriteGuard<'a>, app_error::WriterError> {
-    let entry = writers_map.entry(category.to_string());
+    let entry = context.category_writers.entry(category.to_string());
     entry.or_try_insert_with(|| {
         let file_path: PathBuf = create_category_path(category, context)?;
         let file_exists: bool = file_path.exists();
@@ -226,7 +310,7 @@ fn get_or_create_writer<'a>(
         // Use buffered writer
         let buf_writer: BufWriter<File> = BufWriter::new(file);
         let mut csv_writer: Writer<BufWriter<File>> = WriterBuilder::new()
-            .delimiter(context.file_context.output_delimiter)
+            .delimiter(context.file_context.output_delimiter.into())
             .from_writer(buf_writer);
 
         // Write headers only if the file is newly created
@@ -237,93 +321,11 @@ fn get_or_create_writer<'a>(
     })
 }
 
-/// Writes categorized records to their respective destinations using shared writers.
-///
-/// # Arguments
-///
-/// * `categorized_records` - A `HashMap` where keys are category names (`String`) and
-///   values are `Vec<StringRecord>` containing the records belonging to that category.
-///   This function takes ownership of the map and its contents.
-/// * `context` - A reference to `RecordProcessingContext` which must contain `category_writers`:
-///   a `Mutex`-protected `HashMap` storing the actual `Writer` instances for each category.
-///   This allows multiple threads to potentially call `write_records` safely.
-///
-/// # Errors
-///
-/// Returns `io::Error` if:
-/// * The `category_writers` mutex is poisoned (i.e., another thread panicked while holding the lock).
-/// * `get_or_create_writer` fails (e.g., cannot create a new file, invalid path, permissions error).
-/// * `writer.flush()` fails (e.g., disk full, I/O error).
-///
-/// # Panics
-///
-/// **This function will panic** if `writer.write_record(&record)` returns an error.
-/// This typically happens due to I/O issues (e.g., disk full, broken pipe, permission denied).
-/// Using `.unwrap()` here assumes writes will never fail, which is unsafe for I/O operations.
-/// Consider handling the `Result` returned by `write_record` explicitly for robust error handling.
-/// It's like assuming the mail bag *cannot* catch fire during loading – better be prepared! categorized records to their corresponding CSV files.
-fn write_records(
-    categorized_records: HashMap<String, Vec<StringRecord>>,
-    context: &RecordProcessingContext,
-) -> Result<()> {
-    for (category, records) in categorized_records {
-        let writers_map_guard = context
-            .category_writers
-            .lock()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Mutex lock failed: {e}")))?;
-
-        let mut writer_ref = get_or_create_writer(&category, context, &*writers_map_guard)?;
-
-        for record in records {
-            writer_ref.value_mut().write_record(&record)?;
-        }
-
-        writer_ref.value_mut().flush()?;
-    }
-    Ok(())
-}
-
 #[inline]
 fn get_category(record: &StringRecord, context: &RecordProcessingContext) -> String {
     record
         .get(context.split_column_idx)
         .map_or_else(|| String::from("unknown"), String::from)
-}
-
-// Extracts specific headers from a 'StringRecord', excluding one column.
-pub fn get_headers(current_headers: &StringRecord, split_column_id: usize) -> StringRecord {
-    let headers: Vec<String> = current_headers
-        .iter()
-        .enumerate()
-        // Filter out the split column index
-        .filter_map(|(idx, field)| {
-            if idx != split_column_id {
-                Some(field.to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-    StringRecord::from(headers)
-}
-
-/// Finds the original indexes of selected headers within the full file headers
-pub fn get_header_indexes(
-    headers_to_keep: &StringRecord,
-    all_file_headers: &StringRecord,
-) -> Vec<usize> {
-    all_file_headers
-        .iter()
-        .enumerate()
-        // find the index for each header we want to keep
-        .filter_map(|(idx, file_header)| {
-            if headers_to_keep.iter().any(|h| h == file_header) {
-                Some(idx)
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 /// Creates a file path for a category, ensuring the directory exists if requested.
@@ -356,33 +358,4 @@ fn create_category_path(
         ))
     };
     Ok(file_path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::LazyLock;
-
-    static FILE_HEADERS: LazyLock<StringRecord> =
-        LazyLock::new(|| StringRecord::from(vec!["city", "state"]));
-    static HEADERS: LazyLock<StringRecord> =
-        LazyLock::new(|| StringRecord::from(vec!["city", "state", "year"]));
-
-    #[test]
-    fn test_get_headers() {
-        let headers = HEADERS.clone();
-        let file_headers = FILE_HEADERS.clone();
-        let split_column_idx = 2_usize;
-        let headers = get_headers(&headers, split_column_idx);
-
-        assert_eq!(file_headers, headers);
-    }
-
-    #[test]
-    fn test_get_header_indexes() {
-        let headers = HEADERS.clone();
-        let file_headers = FILE_HEADERS.clone();
-        let indexes = get_header_indexes(&headers, &file_headers);
-        assert_eq!(indexes, vec![0, 1]);
-    }
 }

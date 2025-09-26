@@ -5,15 +5,17 @@ use clap::Parser;
 #[command(author, version, about, long_about=None)]
 pub struct AppConfig {
     #[arg(required = true, num_args = 1..)]
-    paths: Vec<std::path::PathBuf>,
+    pub paths: Vec<std::path::PathBuf>,
     #[arg(short, long, value_enum, default_value_t = Delimiter::Comma)]
-    delimiter: Delimiter,
-    #[arg(short = 'c', long = "column")]
-    input_column: String,
+    pub reader_delimiter: Delimiter,
+    #[arg(short, long = "column")]
+    pub input_column: String,
+    #[arg(short, long, default_value_t = Delimiter::Pipe)]
+    pub writer_delimiter: Delimiter, 
     #[arg(short = 'o', long = "dir")]
-    output_dir: std::path::PathBuf,
+    pub output_dir: std::path::PathBuf,
     #[arg(short = 's', long, default_value_t = 100_000)]
-    chunk_size: usize,
-    #[arg(short = 'r', long = "creat-dir", action)]
-    create_directory: bool,
+    pub chunk_size: usize,
+    #[arg(short, long = "create-dir", action)]
+    pub create_directory: bool,
 }
